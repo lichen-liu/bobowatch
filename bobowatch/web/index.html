@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BoboWatch · HTTP overview</title>
+    <link rel="icon" href="/favicon.svg" />
+    <link rel="stylesheet" href="/style.css" />
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <aside class="sidebar">
+      <a class="brand" href="/" aria-label="BoboWatch home"
+        ><span class="brand-icon">b<span>•</span></span
+        ><strong>BoboWatch</strong></a
+      >
+      <div class="workspace-label">YOUR WORKSPACE</div>
+      <nav aria-label="Sections">
+        <a href="#overview" class="nav-active"
+          ><span aria-hidden="true">▦</span> HTTP overview</a
+        >
+        <a href="#performance"><span aria-hidden="true">⌁</span> Performance</a>
+        <a href="#replicas"
+          ><span aria-hidden="true">▤</span> Sites &amp; replicas</a
+        >
+        <a href="#routes"><span aria-hidden="true">↗</span> Endpoints</a>
+        <a href="#event-section"><span aria-hidden="true">≡</span> Events</a>
+      </nav>
+      <div class="sidebar-bottom">
+        <span class="session-dot"></span> On-demand session
+        <p>Start when you need it.<br />History stays when you leave.</p>
+      </div>
+    </aside>
+    <div class="workspace">
+      <header class="topbar">
+        <div class="breadcrumb">
+          Workspace <span>/</span> <strong>HTTP servers</strong>
+        </div>
+        <div class="connection">
+          <span id="connection" class="pill neutral">Private dashboard</span
+          ><span id="updated">Not connected</span
+          ><button id="logout" hidden>Lock</button>
+        </div>
+      </header>
+      <main id="overview">
+        <section id="login" class="login panel">
+          <span class="eyebrow">BOBOWATCH / PRIVATE ACCESS</span>
+          <h1>A clearer picture<br />of every request.</h1>
+          <p>Open your HTTP monitoring workspace with your admin token.</p>
+          <form id="login-form">
+            <label for="token">Admin token</label
+            ><input
+              type="password"
+              id="token"
+              required
+              autocomplete="off"
+              spellcheck="false"
+            /><button class="primary" type="submit">
+              Open dashboard <span aria-hidden="true">↗</span>
+            </button>
+          </form>
+          <p class="hint">
+            Use the <code>admin.token</code> file in your runtime directory. The
+            token stays in this tab’s memory until you lock or reload.
+          </p>
+          <p id="login-error" role="alert"></p>
+        </section>
+        <div id="dashboard" hidden>
+          <section class="heading">
+            <div>
+              <span class="eyebrow">OBSERVABILITY / HTTP</span>
+              <h1>HTTP overview<span class="heading-dot">.</span></h1>
+              <p>
+                From incoming traffic to the slowest responses. One connected
+                view.
+              </p>
+            </div>
+            <div id="scope-meta" class="scope-meta"></div>
+          </section>
+          <p id="demo-banner" class="demo-banner" hidden>
+            <span class="demo-label">DEMO WORKSPACE</span
+            ><span
+              >Generated HTTP traffic and history. All values are
+              fictional.</span
+            ><span class="demo-session">Manual session</span>
+          </p>
+          <p id="notice" class="notice" role="status" hidden></p>
+          <section class="toolbar" aria-label="Dashboard filters">
+            <label
+              >Project<select id="project">
+                <option value="">All projects</option>
+              </select></label
+            >
+            <label
+              >Site<select id="site">
+                <option value="">All sites</option>
+              </select></label
+            >
+            <label
+              >Host<select id="host">
+                <option value="">All hosts</option>
+              </select></label
+            >
+            <label class="time-filter"
+              >Time window<select id="window">
+                <option value="900">Last 15 minutes</option>
+                <option value="1800" selected>Last 30 minutes</option>
+                <option value="3600">Last hour</option>
+                <option value="21600">Last 6 hours</option>
+                <option value="86400">Last 24 hours</option>
+              </select></label
+            >
+            <button id="clear" hidden>Clear replica</button
+            ><button id="refresh" class="refresh" title="Refresh now">
+              ↻ <span>Refresh</span>
+            </button>
+          </section>
+          <section
+            id="summary"
+            class="summary"
+            aria-label="HTTP serving summary"
+          ></section>
+          <section
+            id="performance"
+            class="performance"
+            aria-label="HTTP performance charts"
+          >
+            <article class="panel chart-panel">
+              <div class="panel-heading">
+                <div>
+                  <span class="eyebrow">TRAFFIC</span>
+                  <h2>Request rate</h2>
+                </div>
+                <span id="traffic-value" class="chart-value"></span>
+              </div>
+              <div id="traffic-chart" class="plot"></div>
+              <div id="traffic-legend" class="legend"></div>
+            </article>
+            <article class="panel chart-panel">
+              <div class="panel-heading">
+                <div>
+                  <span class="eyebrow">LATENCY</span>
+                  <h2>Response time</h2>
+                </div>
+                <span class="chart-note">Histogram bounds · seconds</span>
+              </div>
+              <div id="latency-chart" class="plot"></div>
+              <div id="latency-legend" class="legend"></div>
+            </article>
+            <article class="panel chart-panel">
+              <div class="panel-heading">
+                <div>
+                  <span class="eyebrow">ERRORS</span>
+                  <h2>Response errors</h2>
+                </div>
+                <span class="chart-note">% of requests</span>
+              </div>
+              <div id="errors-chart" class="plot"></div>
+              <div id="errors-legend" class="legend"></div>
+            </article>
+            <article class="panel chart-panel">
+              <div class="panel-heading">
+                <div>
+                  <span class="eyebrow">CONCURRENCY</span>
+                  <h2>Requests in flight</h2>
+                </div>
+                <span class="chart-note">Sampled active requests</span>
+              </div>
+              <div id="concurrency-chart" class="plot"></div>
+              <div id="concurrency-legend" class="legend"></div>
+            </article>
+            <article class="panel chart-panel">
+              <div class="panel-heading">
+                <div>
+                  <span class="eyebrow">THROUGHPUT</span>
+                  <h2>HTTP body traffic</h2>
+                </div>
+                <span class="chart-note">KiB / second</span>
+              </div>
+              <div id="throughput-chart" class="plot"></div>
+              <div id="throughput-legend" class="legend"></div>
+            </article>
+            <article class="panel chart-panel">
+              <div class="panel-heading">
+                <div>
+                  <span class="eyebrow">DISTRIBUTION</span>
+                  <h2>Request duration</h2>
+                </div>
+                <span id="histogram-count" class="chart-note"></span>
+              </div>
+              <div id="histogram-chart" class="plot histogram"></div>
+              <div class="legend">
+                <span
+                  ><i class="key teal"></i> Noncumulative duration buckets</span
+                ><span>Hover a bar for the count</span>
+              </div>
+            </article>
+          </section>
+          <section id="replicas" class="section-heading">
+            <div>
+              <span class="eyebrow">THE SERVING FLEET</span>
+              <h2>Sites &amp; replicas</h2>
+            </div>
+            <span id="replica-count" class="hint"></span>
+          </section>
+          <section
+            id="sites"
+            class="sites"
+            aria-label="Sites and replica comparisons"
+          ></section>
+          <section class="detail-grid">
+            <article id="routes" class="panel">
+              <div class="panel-heading">
+                <div>
+                  <span class="eyebrow">WHERE THE WORK HAPPENS</span>
+                  <h2>Top endpoints</h2>
+                </div>
+                <span class="chart-note">Bounded route templates</span>
+              </div>
+              <div id="route-table" class="table-scroll"></div>
+            </article>
+            <article class="panel response-panel">
+              <div class="panel-heading">
+                <div>
+                  <span class="eyebrow">RESPONSE MIX</span>
+                  <h2>Status classes</h2>
+                </div>
+                <span id="status-coverage" class="chart-note"></span>
+              </div>
+              <div id="status-mix"></div>
+            </article>
+          </section>
+          <section id="event-section" class="panel events-panel">
+            <div class="panel-heading">
+              <div>
+                <span class="eyebrow">RECENT ACTIVITY</span>
+                <h2>Operational events</h2>
+              </div>
+              <span class="chart-note">Newest 12 in scope</span>
+            </div>
+            <div id="events"></div>
+          </section>
+          <footer>
+            <span><strong>BoboWatch</strong> · On demand, by design.</span
+            ><span id="data-meta"></span
+            ><span
+              >Public uptime &amp; host resources are not instrumented
+              yet.</span
+            >
+          </footer>
+        </div>
+      </main>
+    </div>
+  </body>
+</html>
