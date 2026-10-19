@@ -1,0 +1,29 @@
+# Example only: copy entries into an initialized private runtime's monitor.toml.
+# Create distinct admin.token and web.token files in that runtime directory.
+[monitor]
+listen = "127.0.0.1:8720"
+database_url = "sqlite:///monitor.sqlite3"
+admin_token_file = "admin.token"
+sample_seconds = 15
+stale_seconds = 120
+
+[[projects]]
+id = "my-project"
+title = "My project"
+
+[[hosts]]
+id = "local-host"
+title = "Local host"
+
+[[sites]]
+id = "web-prod"
+title = "My website"
+project = "my-project"
+environment = "production"
+
+[[replicas]]
+id = "web-r01"
+title = "Web replica 01"
+site = "web-prod"
+host = "local-host"
+token_file = "web.token"

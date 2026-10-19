@@ -1,0 +1,577 @@
+"""SQLite backend; domain/API code consumes a narrow Storage protocol.
+
+A bounded single writer owns its connection. All snapshot state, deltas and events
+commit together. Read connections are independent and short lived.
+"""
+
+import hashlib
+import json
+import queue
+import sqlite3
+import threading
+import time
+import uuid
+from concurrent.futures import Future, TimeoutError
+from contextlib import closing
+from pathlib import Path
+from typing import Protocol
+
+from .http_metrics import charts, load_http, store_http, summary
+from .protocol import BUCKETS_US, Conflict, Invalid, percentile
+
+
+class Busy(RuntimeError):
+    pass
+
+
+class Storage(Protocol):
+    def ingest(self, payload: dict, replica: str) -> dict: ...
+    def overview(self, filters: dict, window: int) -> dict: ...
+    def backup(self, target: Path) -> None: ...
+    def close(self) -> None: ...
+
+
+def fingerprint(value):
+    return hashlib.sha256(
+        json.dumps(
+            value, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False
+        ).encode()
+    ).hexdigest()
+
+
+class SQLiteStore:
+    def __init__(self, config):
+        self.config, self.path = config, config.database
+        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self._queue = queue.Queue(maxsize=128)
+        self._guard, self._accepting = threading.Lock(), True
+        self._ready, self._startup_error = threading.Event(), None
+        self._thread = threading.Thread(target=self._writer, name="bobowatch-sql", daemon=True)
+        self._thread.start()
+        if not self._ready.wait(10):
+            raise Busy("SQL writer startup timed out")
+        if self._startup_error:
+            raise self._startup_error
+        try:
+            self._submit(self._apply_inventory)
+        except BaseException:
+            self.close()
+            raise
+
+    def _connect(self):
+        conn = sqlite3.connect(self.path, timeout=2)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA synchronous=FULL")
+        return conn
+
+    def _migrate(self, conn):
+        conn.execute("PRAGMA journal_mode=WAL")
+        migrations = [
+            (int(path.stem), path.read_text())
+            for path in sorted((Path(__file__).parent / "migrations").glob("*.sql"))
+        ]
+        expected = {
+            version: hashlib.sha256(sql.encode()).hexdigest() for version, sql in migrations
+        }
+        exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='schema_migrations'"
+        ).fetchone()
+        applied = (
+            dict(conn.execute("SELECT version,checksum FROM schema_migrations")) if exists else {}
+        )
+        if any(
+            version not in expected or expected[version] != checksum
+            for version, checksum in applied.items()
+        ):
+            raise Invalid("Unsupported database version or migration checksum")
+        if sorted(applied) != [version for version, _ in migrations[: len(applied)]]:
+            raise Invalid("Database migration history is not contiguous")
+        pending = [(version, sql) for version, sql in migrations if version not in applied]
+        if applied and pending:
+            backup = self.path.with_name(
+                self.path.name
+                + ".before-v"
+                + str(pending[0][0])
+                + "-"
+                + uuid.uuid4().hex[:8]
+                + ".sqlite3"
+            )
+            with closing(sqlite3.connect(backup)) as destination:
+                backup.chmod(0o600)
+                conn.backup(destination)
+        for version, migration in pending:
+            try:
+                conn.executescript("BEGIN IMMEDIATE;\n" + migration)
+                conn.execute(
+                    "INSERT INTO schema_migrations VALUES (?,?)", (version, expected[version])
+                )
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
+        self.path.chmod(0o600)
+
+    def _writer(self):
+        try:
+            if not self.path.exists():
+                with self.path.open("xb"):
+                    self.path.chmod(0o600)
+            conn = self._connect()
+            try:
+                self._migrate(conn)
+            except BaseException:
+                conn.close()
+                raise
+        except BaseException as exc:
+            self._startup_error = exc
+            self._ready.set()
+            return
+        self._ready.set()
+        try:
+            while True:
+                work = self._queue.get()
+                if work is None:
+                    break
+                operation, future = work
+                try:
+                    with conn:
+                        result = operation(conn)
+                    future.set_result(result)
+                except Exception as exc:
+                    future.set_exception(exc)
+        finally:
+            conn.close()
+
+    def _submit(self, operation):
+        future = Future()
+        with self._guard:
+            if not self._accepting:
+                raise Busy("SQL writer is stopping")
+            try:
+                self._queue.put_nowait((operation, future))
+            except queue.Full:
+                raise Busy("SQL queue is full") from None
+        try:
+            return future.result(timeout=5)
+        except TimeoutError:
+            # Work may commit later; callers retry using snapshot idempotency.
+            raise Busy("SQL acknowledgement timed out") from None
+
+    def close(self):
+        with self._guard:
+            if not self._accepting:
+                return
+            self._accepting = False
+        self._queue.put(None, timeout=5)
+        self._thread.join(10)
+        if self._thread.is_alive():
+            raise Busy("SQL writer did not finish shutdown")
+
+    def _apply_inventory(self, conn):
+        config = self.config
+        old = {r["id"] for r in conn.execute("SELECT id FROM replicas")}
+        if old - {r["id"] for r in config.replicas}:
+            raise Invalid(
+                "Missing replica inventory: keep it with retired=true instead of deleting it"
+            )
+        for table, items in [("projects", config.projects), ("hosts", config.hosts)]:
+            for item in items:
+                row = conn.execute(f"SELECT id FROM {table} WHERE id=?", (item["id"],)).fetchone()
+                if row:
+                    conn.execute(
+                        f"UPDATE {table} SET title=? WHERE id=?", (item["title"], item["id"])
+                    )
+                else:
+                    conn.execute(f"INSERT INTO {table} VALUES (?,?)", (item["id"], item["title"]))
+        for site in config.sites:
+            old_site = conn.execute("SELECT * FROM sites WHERE id=?", (site["id"],)).fetchone()
+            if old_site:
+                if (old_site["project_id"], old_site["environment"]) != (
+                    site["project"],
+                    site["environment"],
+                ):
+                    raise Invalid("Changing site project/environment requires a new site ID")
+                conn.execute("UPDATE sites SET title=? WHERE id=?", (site["title"], site["id"]))
+            else:
+                conn.execute(
+                    "INSERT INTO sites VALUES (?,?,?,?)",
+                    (site["id"], site["project"], site["title"], site["environment"]),
+                )
+        for replica in config.replicas:
+            old_replica = conn.execute(
+                "SELECT * FROM replicas WHERE id=?", (replica["id"],)
+            ).fetchone()
+            if old_replica:
+                if (old_replica["site_id"], old_replica["host_id"]) != (
+                    replica["site"],
+                    replica["host"],
+                ):
+                    raise Invalid("Moving a replica requires a new replica ID")
+                conn.execute(
+                    "UPDATE replicas SET title=?,token_hash=?,retired=? WHERE id=?",
+                    (
+                        replica["title"],
+                        replica["token_hash"],
+                        replica.get("retired", False),
+                        replica["id"],
+                    ),
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO replicas VALUES (?,?,?,?,?,?)",
+                    (
+                        replica["id"],
+                        replica["site"],
+                        replica["host"],
+                        replica["title"],
+                        replica["token_hash"],
+                        replica.get("retired", False),
+                    ),
+                )
+
+    def ingest(self, payload, replica):
+        return self._submit(lambda conn: self._ingest(conn, payload, replica))
+
+    def _ingest(self, conn, p, replica, *, demo_received_at_ms=None):
+        if p["replica"] != replica:
+            raise Invalid("Producer credential does not match replica")
+        registered = conn.execute("SELECT * FROM replicas WHERE id=?", (replica,)).fetchone()
+        if p["started_at_ms"] > int(time.time() * 1000) + 30_000:
+            raise Invalid("Process start time is in the future")
+        if not registered or registered["retired"]:
+            raise Conflict("Replica is not an active inventory target")
+        digest = fingerprint(p)
+        duplicate = conn.execute(
+            "SELECT * FROM snapshots WHERE run_id=? AND sequence=?", (p["run_id"], p["sequence"])
+        ).fetchone()
+        if duplicate:
+            run = conn.execute("SELECT replica_id FROM runs WHERE id=?", (p["run_id"],)).fetchone()
+            if run["replica_id"] != replica or duplicate["payload_hash"] != digest:
+                raise Conflict("Sequence already exists with different contents")
+            return {"sequence": p["sequence"], "duplicate": True}
+        run = conn.execute("SELECT * FROM runs WHERE id=?", (p["run_id"],)).fetchone()
+        latest_run = conn.execute(
+            "SELECT * FROM runs WHERE replica_id=? ORDER BY started_at_ms DESC LIMIT 1", (replica,)
+        ).fetchone()
+        if latest_run and (p["started_at_ms"], p["run_id"]) != (
+            latest_run["started_at_ms"],
+            latest_run["id"],
+        ):
+            if p["started_at_ms"] <= latest_run["started_at_ms"]:
+                raise Conflict("Run was superseded; one producer per replica slot is supported")
+        if run:
+            if (run["replica_id"], run["started_at_ms"], run["revision"]) != (
+                replica,
+                p["started_at_ms"],
+                p["revision"],
+            ):
+                raise Conflict("Run identity is immutable")
+        else:
+            if (
+                conn.execute(
+                    "SELECT COUNT(*) FROM runs WHERE replica_id=? AND started_at_ms>=?",
+                    (replica, int(time.time() * 1000) - 86400000),
+                ).fetchone()[0]
+                >= 100
+            ):
+                raise Conflict("Daily process-run budget exceeded")
+            conn.execute(
+                "INSERT INTO runs VALUES (?,?,?,?)",
+                (p["run_id"], replica, p["started_at_ms"], p["revision"]),
+            )
+        previous = conn.execute(
+            "SELECT * FROM snapshots WHERE run_id=? ORDER BY sequence DESC LIMIT 1", (p["run_id"],)
+        ).fetchone()
+        if previous and (
+            p["sequence"] <= previous["sequence"]
+            or p["elapsed_ms"] <= previous["elapsed_ms"]
+            or p["observed_at_ms"] < previous["observed_at_ms"]
+        ):
+            raise Conflict("Snapshot sequence/time did not advance")
+        before = previous or {"requests": 0, "errors": 0, "duration_sum_us": 0, "elapsed_ms": 0}
+        delta = {key: p[key] - before[key] for key in ("requests", "errors", "duration_sum_us")}
+        old_buckets = (
+            [
+                r["total"]
+                for r in conn.execute(
+                    "SELECT total FROM histogram_buckets WHERE snapshot_id=? ORDER BY bucket_index",
+                    (previous["id"],),
+                )
+            ]
+            if previous
+            else [0] * len(p["buckets"])
+        )
+        bucket_deltas = [value - old for value, old in zip(p["buckets"], old_buckets, strict=True)]
+        if min(delta.values()) < 0 or min(bucket_deltas) < 0 or delta["errors"] > delta["requests"]:
+            raise Conflict("Cumulative values decreased or errors exceed interval requests")
+        if demo_received_at_ms is not None and not self.config.demo:
+            raise Invalid("Historical fixture import is restricted to demo runtimes")
+        received = int(time.time() * 1000) if demo_received_at_ms is None else demo_received_at_ms
+        interval = p["elapsed_ms"] - before["elapsed_ms"]
+        if interval <= 0:
+            raise Invalid("Snapshot elapsed time must advance beyond zero")
+        skewed = abs(received - p["observed_at_ms"]) > 30_000
+        partial = interval > self.config.sample_seconds * 2500
+        key = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO snapshots VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                key,
+                p["run_id"],
+                p["sequence"],
+                p["observed_at_ms"],
+                received,
+                p["elapsed_ms"],
+                p["requests"],
+                p["errors"],
+                p["duration_sum_us"],
+                delta["requests"],
+                delta["errors"],
+                delta["duration_sum_us"],
+                interval,
+                int(partial),
+                int(skewed),
+                digest,
+            ),
+        )
+        conn.executemany(
+            "INSERT INTO histogram_buckets VALUES (?,?,?,?)",
+            [(key, i, total, bucket_deltas[i]) for i, total in enumerate(p["buckets"])],
+        )
+        store_http(conn, key, p, previous)
+        for event in p["events"]:
+            event_hash = fingerprint(event)
+            existing = conn.execute("SELECT * FROM events WHERE id=?", (event["id"],)).fetchone()
+            if existing:
+                if existing["run_id"] != p["run_id"] or existing["payload_hash"] != event_hash:
+                    raise Conflict("Event ID already exists with different contents")
+            else:
+                conn.execute(
+                    "INSERT INTO events VALUES (?,?,?,?,?,?)",
+                    (
+                        event["id"],
+                        p["run_id"],
+                        event["at_ms"],
+                        event["severity"],
+                        event["message"],
+                        event_hash,
+                    ),
+                )
+        return {"sequence": p["sequence"], "duplicate": False}
+
+    def overview(self, filters, window, *, now_ms=None):
+        now = int(time.time() * 1000) if now_ms is None else now_ms
+        since = now - window * 1000
+        with closing(self._connect()) as conn:
+            conn.execute("PRAGMA query_only=ON")
+            deadline = time.monotonic() + 2
+            conn.set_progress_handler(lambda: int(time.monotonic() > deadline), 1000)
+            # One short read transaction gives all panels a consistent view.
+            with conn:
+                conn.execute("BEGIN")
+                inventory = [
+                    dict(row)
+                    for row in conn.execute("""
+                    SELECT r.id,r.title,r.site_id,r.host_id,s.project_id,s.environment,
+                           s.title AS site_title,p.title AS project_title,h.title AS host_title
+                    FROM replicas r JOIN sites s ON s.id=r.site_id
+                    JOIN projects p ON p.id=s.project_id JOIN hosts h ON h.id=r.host_id
+                    WHERE r.retired=0 ORDER BY s.project_id,s.id,r.id""")
+                ]
+                inventory = [
+                    r
+                    for r in inventory
+                    if all(not value or str(r.get(key)) == value for key, value in filters.items())
+                ]
+                replicas, rows, events = [], [], []
+                for replica in inventory:
+                    latest = conn.execute(
+                        """SELECT n.*,u.revision FROM snapshots n
+                        JOIN runs u ON u.id=n.run_id WHERE u.replica_id=?
+                        ORDER BY u.started_at_ms DESC,n.sequence DESC LIMIT 1""",
+                        (replica["id"],),
+                    ).fetchone()
+                    status = "waiting"
+                    if latest:
+                        age = max(now - latest["received_at_ms"], now - latest["observed_at_ms"])
+                        status = (
+                            "skewed"
+                            if latest["skewed"]
+                            else ("fresh" if age <= self.config.stale_seconds * 1000 else "stale")
+                        )
+                    replicas.append(
+                        {
+                            **replica,
+                            "status": status,
+                            "observed_at_ms": latest["observed_at_ms"] if latest else None,
+                            "received_at_ms": latest["received_at_ms"] if latest else None,
+                            "revision": latest["revision"] if latest else None,
+                        }
+                    )
+                if replicas:
+                    placeholders = ",".join("?" for _ in replicas)
+                    ids = [r["id"] for r in replicas]
+                    selected = conn.execute(
+                        f"""SELECT n.*,u.replica_id,r.site_id FROM snapshots n
+                        JOIN runs u ON u.id=n.run_id JOIN replicas r ON r.id=u.replica_id
+                        WHERE u.replica_id IN ({placeholders}) AND n.observed_at_ms BETWEEN ? AND ?
+                        ORDER BY n.observed_at_ms DESC LIMIT 4001""",
+                        (*ids, since, now),
+                    ).fetchall()
+                    truncated = len(selected) > 4000
+                    rows = [
+                        {
+                            **dict(row),
+                            "replica": row["replica_id"],
+                            "site": row["site_id"],
+                            "buckets": [0] * (len(BUCKETS_US) + 1),
+                        }
+                        for row in selected[:4000]
+                    ]
+                    by_id = {row["id"]: row for row in rows}
+                    for offset in range(0, len(rows), 200):
+                        keys = [row["id"] for row in rows[offset : offset + 200]]
+                        marks = ",".join("?" for _ in keys)
+                        for bucket in conn.execute(
+                            f"SELECT * FROM histogram_buckets WHERE snapshot_id IN ({marks})", keys
+                        ):
+                            by_id[bucket["snapshot_id"]]["buckets"][bucket["bucket_index"]] = (
+                                bucket["delta"]
+                            )
+                    events = [
+                        dict(row)
+                        for row in conn.execute(
+                            f"""
+                        SELECT e.id,e.occurred_at_ms,e.severity,e.message,u.replica_id AS replica,r.site_id AS site
+                        FROM events e JOIN runs u ON u.id=e.run_id JOIN replicas r ON r.id=u.replica_id
+                        WHERE u.replica_id IN ({placeholders}) AND e.occurred_at_ms BETWEEN ? AND ?
+                        ORDER BY e.occurred_at_ms DESC LIMIT 100""",
+                            (*ids, since, now),
+                        )
+                    ]
+                    for replica in replicas:
+                        replica["history_truncated"] = truncated
+                load_http(conn, rows)
+                # Bounded output: bin recorded deltas, never average replica percentiles.
+                step = max(5_000, window * 1000 // 180)
+                bins = {}
+                for row in rows:
+                    time_bin = row["observed_at_ms"] // step * step
+                    cell = bins.setdefault(
+                        (row["site"], time_bin),
+                        {
+                            "site": row["site"],
+                            "at_ms": time_bin,
+                            "requests": 0,
+                            "errors": 0,
+                            "partial": False,
+                            "replicas": set(),
+                        },
+                    )
+                    cell["requests"] += row["delta_requests"]
+                    cell["errors"] += row["delta_errors"]
+                    cell["partial"] |= bool(row["partial"] or row["skewed"])
+                    cell["replicas"].add(row["replica"])
+                history = [{**cell, "reporting": len(cell["replicas"])} for cell in bins.values()]
+                for cell in history:
+                    del cell["replicas"]
+                sites = []
+                for site_id in dict.fromkeys(r["site_id"] for r in replicas):
+                    members = [r for r in replicas if r["site_id"] == site_id]
+                    selected = [r for r in rows if r["site"] == site_id]
+                    buckets = [
+                        sum(row["buckets"][i] for row in selected)
+                        for i in range(len(BUCKETS_US) + 1)
+                    ]
+                    sites.append(
+                        {
+                            "id": site_id,
+                            "title": members[0]["site_title"],
+                            "project": members[0]["project_id"],
+                            "project_title": members[0]["project_title"],
+                            "environment": members[0]["environment"],
+                            "replicas": members,
+                            "snapshots": len(selected),
+                            "requests": sum(r["delta_requests"] for r in selected),
+                            "errors": sum(r["delta_errors"] for r in selected),
+                            "p95": percentile(buckets),
+                            "partial": any(r["partial"] or r["skewed"] for r in selected),
+                            "history_truncated": any(r["history_truncated"] for r in members),
+                        }
+                    )
+                for site in sites:
+                    site_rows = [row for row in rows if row["site"] == site["id"]]
+                    site["http"] = summary(site_rows)
+                    site["charts"], site["current"] = charts(
+                        site_rows, site["replicas"], step, now, self.config.stale_seconds * 1000
+                    )
+                    for replica in site["replicas"]:
+                        values = [row for row in site_rows if row["replica"] == replica["id"]]
+                        replica["http"] = summary(values)
+                        _, replica["current"] = charts(
+                            values, [replica], step, now, self.config.stale_seconds * 1000
+                        )
+                combined, current = charts(
+                    rows, replicas, step, now, self.config.stale_seconds * 1000
+                )
+                return {
+                    "http": summary(rows),
+                    "charts": combined,
+                    "current": current,
+                    "bucket_seconds": step / 1000,
+                    "schema_version": 2,
+                    "now_ms": now,
+                    "window_seconds": window,
+                    "demo": self.config.demo,
+                    "sites": sites,
+                    "history": sorted(history, key=lambda row: row["at_ms"]),
+                    "events": sorted(events, key=lambda row: row["occurred_at_ms"], reverse=True)[
+                        :100
+                    ],
+                    "queue_depth": self._queue.qsize(),
+                    "site_options": [
+                        dict(row)
+                        for row in conn.execute(
+                            "SELECT id,title,project_id FROM sites ORDER BY title"
+                        )
+                    ],
+                    "projects": [
+                        dict(r)
+                        for r in conn.execute("SELECT id,title FROM projects ORDER BY title")
+                    ],
+                    "hosts": [
+                        dict(r) for r in conn.execute("SELECT id,title FROM hosts ORDER BY title")
+                    ],
+                    "stale_seconds": self.config.stale_seconds,
+                    "storage_bytes": self.path.stat().st_size,
+                    "wal_bytes": Path(str(self.path) + "-wal").stat().st_size
+                    if Path(str(self.path) + "-wal").exists()
+                    else 0,
+                }
+
+    def backup(self, target):
+        backup_sqlite(self.path, target)
+
+
+def backup_sqlite(source_path, target):
+    """Consistent read-only backup, usable while the daemon owns its writer lock."""
+    source_path = Path(source_path).expanduser().resolve()
+    target = Path(target).expanduser().resolve()
+    if not source_path.is_file() or target == source_path:
+        raise Invalid("Source missing or backup would overwrite live data")
+    with target.open("xb"):
+        target.chmod(0o600)
+    try:
+        with (
+            closing(sqlite3.connect(f"{source_path.as_uri()}?mode=ro", uri=True)) as source,
+            closing(sqlite3.connect(target)) as dest,
+        ):
+            source.backup(dest, pages=128, sleep=0.05)
+            if dest.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                raise Invalid("Backup integrity check failed")
+            if dest.execute("PRAGMA foreign_key_check").fetchall():
+                raise Invalid("Backup foreign-key check failed")
+    except BaseException:
+        target.unlink(missing_ok=True)
+        raise
