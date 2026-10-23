@@ -79,8 +79,12 @@ replica entry outright fails startup. Old SQL history remains in either case,
 although the current dashboard lists only active inventory.
 
 Tokens are scoped and their hashes are persisted for producer registration; raw
-tokens live in runtime files. The browser holds the admin token only in tab
-memory. The API disables cross-origin access and the UI inserts event text using
+tokens live in runtime files. Installed dashboard reads are available without
+login to local-network clients. Producer ingestion remains authenticated, and
+administrator control additionally requires loopback access. The separate private
+`dashboard-policy.json` can select token mode; only then does the browser hold
+the admin token in tab memory. The policy reloads live, and explicit choices survive
+reinstallation. Legacy `init`/`demo` runtimes default to token mode. The API disables cross-origin access and the UI inserts event text using
 `textContent`. Callers must supply redacted operational summaries: automatic
 redaction or unrestricted log collection is not implemented.
 

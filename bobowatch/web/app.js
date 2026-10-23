@@ -2,6 +2,7 @@
 const $ = (id) => document.getElementById(id);
 const state = {
   token: "",
+  localAccess: false,
   data: null,
   replica: "",
   busy: false,
@@ -850,7 +851,7 @@ function render() {
     `${numeric(data.bucket_seconds)}s chart buckets · partial intervals remain gaps`;
 }
 async function refresh() {
-  if (!state.token) return false;
+  if (!state.token && !state.localAccess) return false;
   if (state.busy) {
     state.pending = true;
     return false;
@@ -867,9 +868,16 @@ async function refresh() {
       if ($(key).value) query.set(key, $(key).value);
     if (state.replica) query.set("replica", state.replica);
     const response = await fetch("/api/overview?" + query, {
-      headers: { Authorization: "Bearer " + state.token },
+      headers: state.token ? { Authorization: "Bearer " + state.token } : {},
       signal: controller.signal,
     });
+    if (response.status === 401) {
+      state.token = "";
+      state.localAccess = false;
+      state.data = null;
+      clearInterval(timer);
+      showLogin();
+    }
     if (!response.ok)
       throw new Error(
         response.status === 401
@@ -879,6 +887,8 @@ async function refresh() {
     const data = await response.json();
     if (session !== state.session) return false;
     state.data = data;
+    state.localAccess = data.dashboard_access === "local";
+    if (state.localAccess) state.token = "";
     state.error = "";
     options("project", data.projects, "All projects");
     options("host", data.hosts, "All hosts");
@@ -891,7 +901,7 @@ async function refresh() {
     );
     $("login").hidden = true;
     $("dashboard").hidden = false;
-    $("logout").hidden = false;
+    $("logout").hidden = state.localAccess;
     render();
     return true;
   } catch (error) {
@@ -907,10 +917,50 @@ async function refresh() {
     clearTimeout(timeout);
     state.busy = false;
     $("refresh").disabled = false;
-    if (state.pending && state.token) {
+    if (state.pending && (state.token || state.localAccess)) {
       state.pending = false;
       queueMicrotask(refresh);
     }
+  }
+}
+function showLogin() {
+  $("login").hidden = false;
+  $("dashboard").hidden = true;
+  $("logout").hidden = true;
+  $("login-form").hidden = state.localAccess;
+  $("login-hint").hidden = state.localAccess;
+  $("login-title").textContent = state.localAccess
+    ? "Your local monitoring dashboard"
+    : "A clearer picture of every request.";
+  $("login-description").textContent = state.localAccess
+    ? "Connecting to monitoring history. No login is required on your local network."
+    : "Open your HTTP monitoring workspace with your admin token.";
+}
+async function connect() {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 6000);
+  $("connection").textContent = "Connecting";
+  try {
+    const response = await fetch("/api/access", { signal: controller.signal });
+    if (!response.ok) throw new Error("Dashboard connection unavailable. Reload to retry.");
+    const access = await response.json();
+    state.localAccess = access.dashboard_access === "local";
+    showLogin();
+    if (state.localAccess) {
+      timer = setInterval(refresh, 3000);
+      await refresh();
+    } else $("connection").textContent = "Private dashboard";
+  } catch (error) {
+    showLogin();
+    $("login-form").hidden = true;
+    $("login-hint").hidden = true;
+    $("login-title").textContent = "Dashboard unavailable";
+    $("login-description").textContent = "Check that BoboWatch is running, then reload this page.";
+    $("login-error").textContent = error.name === "AbortError"
+      ? "Dashboard connection timed out. Reload to retry."
+      : error.message;
+  } finally {
+    clearTimeout(timeout);
   }
 }
 $("login-form").addEventListener("submit", async (event) => {
@@ -937,9 +987,7 @@ $("logout").addEventListener("click", () => {
   state.replica = "";
   state.error = "";
   clearInterval(timer);
-  $("dashboard").hidden = true;
-  $("login").hidden = false;
-  $("logout").hidden = true;
+  showLogin();
   $("login-error").textContent = "";
   $("token").focus();
   $("connection").textContent = "Private dashboard";
@@ -963,3 +1011,4 @@ $("sites").addEventListener("click", (event) => {
     refresh();
   }
 });
+connect();

@@ -1,12 +1,14 @@
 # BoboWatch
 
 A small, standalone monitoring tool for multiple projects, sites and replicas.
-One Python process, a private dashboard and a local SQL database.
+One Python process, a local-network dashboard and a local SQL database.
 
 The dashboard shows HTTP request rate, latency bounds, errors, active requests,
 body throughput, endpoints and replica comparisons. The macOS installed runtime
 adds a verified five-GiB RAM disk, circular retention, live quota administration
-and explicitly started crash supervision. One pinned Waitress dependency; no
+and explicitly started crash supervision. Installed dashboards open directly on
+your trusted local network without login; app ingestion and local controls retain
+their credentials. One pinned Waitress dependency; no
 external collector suite, frontend build or database server.
 
 **[Installation, deployment, upgrades and Flightrepo rollout](docs/runtime.md).**
