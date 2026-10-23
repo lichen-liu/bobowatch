@@ -125,3 +125,67 @@ class ServerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReloadServerTests(unittest.TestCase):
+    def test_running_server_accepts_offline_registration_without_restart(self):
+        from bobowatch.provision import ensure_registration
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            with socket.socket() as listener:
+                listener.bind(("127.0.0.1", 0))
+                port = listener.getsockname()[1]
+            config = initialize(root / "watch", port=port)
+            client = root / "flight"
+            client.mkdir(mode=0o700)
+            process = subprocess.Popen(
+                [sys.executable, "-m", "bobowatch", "serve", "--config", str(config.path)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            try:
+                for _ in range(80):
+                    try:
+                        with urlopen(f"http://127.0.0.1:{port}/health", timeout=0.2) as response:
+                            self.assertEqual(response.status, 200)
+                        break
+                    except OSError:
+                        time.sleep(0.05)
+                else:
+                    self.fail("Server did not start")
+                result = ensure_registration(
+                    runtime=config.path.parent,
+                    project="travel",
+                    site="flight-prod",
+                    host="mac-01",
+                    replica="flight-r01",
+                    token_file=client / "producer.token",
+                )
+                monitor = Monitor(
+                    replica=result["replica"],
+                    endpoint=result["endpoint"],
+                    token_file=result["token_file"],
+                )
+                monitor.record_request(0.1)
+                for _ in range(70):
+                    if monitor.flush():
+                        break
+                    time.sleep(0.05)
+                else:
+                    self.fail("Live registration was not reloaded")
+                self.assertIsNone(process.poll())
+                request = Request(
+                    f"http://127.0.0.1:{port}/api/overview",
+                    headers={
+                        "Authorization": "Bearer " + config.admin_token_file.read_text().strip()
+                    },
+                )
+                with urlopen(request, timeout=2) as response:
+                    data = json.load(response)
+                self.assertEqual(sum(site["requests"] for site in data["sites"]), 1)
+            finally:
+                process.terminate()
+                process.communicate(timeout=10)
+            self.assertEqual(process.returncode, 0)

@@ -169,8 +169,17 @@ class ASGITests(unittest.TestCase):
         monitor.start, monitor.close = Mock(), Mock()
         return monitor
 
-    def invoke(self, app, monitor, *, path="/v1/items/123?private", messages=None):
-        scope = {"type": "http", "method": "POST", "path": path}
+    def invoke(
+        self,
+        app,
+        monitor,
+        *,
+        path="/v1/items/123?private",
+        messages=None,
+        method="POST",
+        headers=(),
+    ):
+        scope = {"type": "http", "method": method, "path": path, "headers": list(headers)}
         incoming = iter(messages or [{"type": "http.request", "body": b"abc", "more_body": False}])
         sent = []
 
@@ -299,3 +308,17 @@ class ClientReloadTests(unittest.TestCase):
             self.assertEqual(deliveries[-1].full_url, config["endpoint"])
             self.assertEqual(monitor.run_id, identity)
             self.assertEqual(monitor.snapshot()["requests"], 1)
+
+
+class RequestBodyCoverageTests(unittest.TestCase):
+    def test_unconsumed_get_body_is_unknown(self):
+        monitor = ASGITests().monitor()
+
+        async def app(scope, receive, send):
+            await send({"type": "http.response.start", "status": 200})
+            await send({"type": "http.response.body", "body": b"ok"})
+
+        data, _ = ASGITests().invoke(
+            app, monitor, method="GET", headers=[(b"content-length", b"3")]
+        )
+        self.assertEqual(data["http"]["sized_requests"], 0)

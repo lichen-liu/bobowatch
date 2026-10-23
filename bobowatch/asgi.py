@@ -52,7 +52,12 @@ class InstrumentedApp:
         if monitor is None:
             return await self.app(scope, receive, send)
         incoming = outgoing = 0
-        request_complete = scope.get("method") in ("GET", "HEAD")
+        headers = dict(scope.get("headers", ()))
+        request_complete = headers.get(b"content-length") == b"0" or (
+            scope.get("method") in ("GET", "HEAD")
+            and b"content-length" not in headers
+            and b"transfer-encoding" not in headers
+        )
         response_complete = False
         status = 500
 

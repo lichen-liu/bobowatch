@@ -12,6 +12,7 @@ from collections import deque
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.error import HTTPError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
@@ -221,6 +222,8 @@ class Monitor:
                 self.last_error = None
                 return True
             except (OSError, ValueError) as exc:
+                if isinstance(exc, HTTPError):
+                    exc.close()
                 # Export no token, request body or URL into diagnostics.
                 if self.last_error is None:
                     log.warning(
