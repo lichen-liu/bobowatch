@@ -4,6 +4,7 @@ import argparse
 import fcntl
 import logging
 import signal
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -44,9 +45,12 @@ def serve(config, *, simulate=False):
         store = SQLiteStore(config)
         simulation, server = None, None
         previous_handlers = {}
+        reload_stop = threading.Event()
+        reload_thread = None
         try:
+            application = Application(config, store)
             server = create_server(
-                Application(config, store),
+                application,
                 host=config.host,
                 port=config.port,
                 threads=4,
@@ -60,6 +64,25 @@ def serve(config, *, simulate=False):
                 inbuf_overflow=262145,
                 ident="BoboWatch",
             )
+
+            def reload_loop():
+                failed = False
+                while not reload_stop.wait(2):
+                    try:
+                        application.reload()
+                        failed = False
+                    except Exception as error:
+                        if not failed:
+                            logging.getLogger(__name__).warning(
+                                "Config reload rejected (%s); keeping prior settings",
+                                type(error).__name__,
+                            )
+                        failed = True
+
+            reload_thread = threading.Thread(
+                target=reload_loop, name="bobowatch-config", daemon=True
+            )
+            reload_thread.start()
             if simulate:
                 simulation = Simulation(config, store)
                 simulation.start()
@@ -89,6 +112,9 @@ def serve(config, *, simulate=False):
             except KeyboardInterrupt:
                 pass
         finally:
+            reload_stop.set()
+            if reload_thread:
+                reload_thread.join(6)
             if simulation:
                 simulation.close()
             if server:
@@ -117,10 +143,31 @@ def main():
         item.add_argument("--config", type=Path, required=True)
         if name == "backup":
             item.add_argument("--output", type=Path, required=True)
+    provision = commands.add_parser("provision")
+    provision.add_argument("--runtime-dir", type=Path)
+    for field in ("project", "site", "host", "replica"):
+        provision.add_argument("--" + field, required=True)
+    provision.add_argument("--token-file", type=Path, required=True)
+    provision.add_argument("--environment", default="production")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     try:
-        if args.command in ("init", "demo"):
+        if args.command == "provision":
+            import json
+
+            from .provision import ensure_registration
+
+            result = ensure_registration(
+                runtime=args.runtime_dir,
+                project=args.project,
+                site=args.site,
+                host=args.host,
+                replica=args.replica,
+                token_file=args.token_file,
+                environment=args.environment,
+            )
+            print(json.dumps(result))
+        elif args.command in ("init", "demo"):
             if not 1 <= args.port <= 65535:
                 raise Invalid("Port must be between 1 and 65535")
             config = initialize(args.state_dir, demo=args.command == "demo", port=args.port)

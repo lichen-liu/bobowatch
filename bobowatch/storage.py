@@ -168,8 +168,8 @@ class SQLiteStore:
         if self._thread.is_alive():
             raise Busy("SQL writer did not finish shutdown")
 
-    def _apply_inventory(self, conn):
-        config = self.config
+    def _apply_inventory(self, conn, config=None):
+        config = config or self.config
         old = {r["id"] for r in conn.execute("SELECT id FROM replicas")}
         if old - {r["id"] for r in config.replicas}:
             raise Invalid(
@@ -229,6 +229,10 @@ class SQLiteStore:
                         replica.get("retired", False),
                     ),
                 )
+
+    def reload_inventory(self, config):
+        self._submit(lambda conn: self._apply_inventory(conn, config))
+        self.config = config
 
     def ingest(self, payload, replica):
         return self._submit(lambda conn: self._ingest(conn, payload, replica))
