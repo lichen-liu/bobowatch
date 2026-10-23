@@ -1,0 +1,25 @@
+#!/bin/sh
+set -eu
+watch_runtime="${BOBOWATCH_RUNTIME_DIR-$HOME/Library/Application Support/fyi.boboji.watch}"
+watch_next=false
+for watch_argument in "$@"; do
+    if [ "$watch_next" = true ]; then
+        watch_runtime="$watch_argument"
+        watch_next=false
+        continue
+    fi
+    case "$watch_argument" in
+        --runtime-dir) watch_next=true ;;
+        --runtime-dir=*) watch_runtime="${watch_argument#--runtime-dir=}" ;;
+    esac
+done
+if [ "$watch_next" = true ]; then echo '--runtime-dir requires a path' >&2; exit 1; fi
+case "$watch_runtime" in
+    '~') watch_runtime="$HOME" ;;
+    '~/'*) watch_runtime="$HOME/${watch_runtime#\~/}" ;;
+esac
+case "$watch_runtime" in /*) ;; *) echo 'Use an absolute runtime path' >&2; exit 1 ;; esac
+if [ -x "$watch_runtime/venv/bin/python" ] && [ -f "$watch_runtime/manage.py" ]; then
+    exec "$watch_runtime/venv/bin/python" "$watch_runtime/manage.py" "$@"
+fi
+exec python3 "$(dirname "$0")/manage.py" "$@"

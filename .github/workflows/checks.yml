@@ -38,8 +38,8 @@ jobs:
       - name: Install development requirements
         run: python -m pip install -r requirements-dev.txt
       - name: Lint
-        run: ruff check bobowatch tests examples
+        run: ruff check bobowatch tests examples installation deployment
       - name: Check formatting
-        run: ruff format --check bobowatch tests examples
+        run: ruff format --check bobowatch tests examples installation deployment
       - name: Test
         run: python -Werror::ResourceWarning -m unittest discover -s tests -v
