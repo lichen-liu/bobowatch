@@ -54,8 +54,8 @@ migration causes a checksum failure. Future changes need a new ordered migration
 ## Inventory and credentials
 
 `init` creates an empty runtime; `demo` creates a separate runtime with two
-synthetic sites. Both keep credentials and SQL outside the checkout. Inventory is
-loaded at startup; restart to apply changes. Invalid inventory fails startup.
+synthetic sites. Both keep credentials and SQL outside the checkout. Inventory loads at startup and is revalidated every two seconds; invalid reloads
+keep prior settings. Listener/database/demo changes require restart. Invalid inventory fails startup.
 
 To configure a new replica in a real empty runtime:
 
@@ -158,7 +158,8 @@ The adapter's `request()` context measures elapsed work, records completion and
 clears active work in `finally`. Direct `record_request()` calls leave concurrency
 unknown unless lifecycle instrumentation is also used. Provide both body sizes
 for throughput coverage; the chart does not substitute missing sizes with zero.
-ASGI/WSGI serving wrappers remain future work; this is an explicit integration API.
+The dependency-free ASGI wrapper is now available; WSGI instrumentation remains
+future work. See integration.md for setup and the deployment gate.
 
 Request rates are each replica's interval count divided by its monotonic interval,
 then summed across replicas. Multiple observations in a chart bucket use a

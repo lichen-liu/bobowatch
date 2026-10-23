@@ -130,6 +130,12 @@ runtime configuration and token files separately alongside your recovery plan.
 Restore to a new runtime directory with its configuration/secrets and a copy of
 the backup named by `database_url`; do not overwrite a running database.
 
+## Application integration
+
+See [integration setup](docs/integration.md) for offline token registration, live
+inventory reload, ASGI instrumentation and endpoint updates. These foundations
+do not deploy or enable monitoring in a hosted application.
+
 ## GitHub repository
 
 Source: [lichen-liu/bobowatch](https://github.com/lichen-liu/bobowatch). See
@@ -194,7 +200,7 @@ The [runtime and RAM-storage design](docs/runtime-storage-design.md) proposes
 `fyi.boboji.watch`, on-demand supervision, a bounded five-GiB RAM disk and local
 administration. Those lifecycle/storage features are not implemented yet.
 
-ASGI/WSGI wrappers, real app integrations, process/host sampling, public probes,
+WSGI wrappers, hosted app activation, process/host sampling, public probes,
 job/freshness hooks, alert state, automatic retention and server-database support
 are **not implemented yet**. This is a working local pilot, not the complete
 monitoring design. History queries are capped at 4,000 snapshots per scope, with

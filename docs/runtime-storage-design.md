@@ -7,7 +7,7 @@ not a description of features already deployed. They supplement the broader
 ## Current implementation and revised requirements
 
 Current BoboWatch uses one foreground Python process, Waitress, a single SQL
-writer, and a disk-backed SQLite database. It has no installed runtime manager,
+writer, a disk-backed SQLite database, local registration and live config reload. It has no installed runtime manager,
 RAM-disk provisioning, quota enforcement, retention worker or interactive admin
 shell. No infrastructure is changed by this document.
 
@@ -164,9 +164,9 @@ identity. Bound normal-disk diagnostic logs independently of the history quota.
 
 ## Capacity experiment
 
-This Mac reports 48 GiB physical RAM. A separate seven-GiB ingestion RAM disk
-already exists, so adding five GiB would bring nominal RAM-disk capacity to twelve
-GiB (25% of physical RAM), before all other app/cache memory. This is plausible
+This Mac reports 48 GiB physical RAM. The ingestion RAM disk was reduced from seven to five GiB after the sizing
+experiment. Adding five GiB for BoboWatch would bring nominal RAM-disk capacity
+to ten GiB (about 21% of physical RAM), before all other app/cache memory. This is plausible
 for a pilot, not an unconditional memory reservation approval. Validate memory
 pressure at startup and show a useful error if allocation is unsafe.
 
