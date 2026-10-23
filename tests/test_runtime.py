@@ -231,5 +231,11 @@ class RuntimeTests(unittest.TestCase):
                 with patch.object(store, "storage_status", return_value={"volume_bytes": 1024**3}):
                     self.assertEqual(request("127.0.0.1", token)[0], 400)
                 self.assertEqual((self.root / "storage-policy.json").read_bytes(), prior_policy)
+                old_token = token
+                token = "rotated-admin-" + "x" * 40
+                config.admin_token_file.write_text(token)
+                self.assertTrue(app.reload())
+                self.assertEqual(request("127.0.0.1", old_token)[0], 403)
+                self.assertEqual(request("127.0.0.1", token)[0], 202)
             finally:
                 store.close()
