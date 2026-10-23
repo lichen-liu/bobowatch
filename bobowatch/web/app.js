@@ -657,6 +657,10 @@ function render() {
       ? 0
       : replicas.filter((r) => r.status === "fresh").length;
   $("demo-banner").hidden = !data.demo;
+  const storage = data.storage;
+  $("storage-status").textContent = storage
+    ? `${storage.ram_only ? "RAM-only history" : "SQL history"} · ${(storage.used_bytes / 2 ** 20).toFixed(1)} MiB${storage.quota_bytes ? ` / ${(storage.quota_bytes / 2 ** 30).toFixed(2)} GiB quota` : ""} · epoch ${storage.epoch.slice(0, 8)} · ${number(storage.evicted_snapshots)} old observations evicted${storage.oldest_at_ms ? ` · oldest ${new Date(storage.oldest_at_ms).toLocaleString()}` : ""}`
+    : "";
   $("connection").replaceWith(
     Object.assign(
       badge(

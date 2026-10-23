@@ -137,7 +137,12 @@ class HTTPMetricsTests(unittest.TestCase):
         with closing(sqlite3.connect(self.config.database)) as conn, conn:
             for table in ("route_totals", "response_classes", "http_samples"):
                 conn.execute(f"DROP TABLE {table}")
-            conn.execute("DELETE FROM schema_migrations WHERE version=2")
+            conn.execute("DROP TABLE event_receipts")
+            conn.execute("DROP TABLE storage_state")
+            conn.execute("DROP INDEX snapshots_receipt")
+            conn.execute("DROP INDEX events_receipt")
+            conn.execute("ALTER TABLE events DROP COLUMN received_at_ms")
+            conn.execute("DELETE FROM schema_migrations WHERE version>=2")
         self.store = SQLiteStore(self.config)
         self.assertEqual(self.data()["http"]["requests"], 1)
         self.assertIsNone(self.data()["http"]["status_classes"])

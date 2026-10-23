@@ -4,6 +4,7 @@ import hmac
 import json
 import logging
 import sqlite3
+import threading
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
@@ -24,6 +25,7 @@ ASSETS = {
 class Application:
     def __init__(self, config, store):
         self.config, self.store = config, store
+        self._reload_lock = threading.RLock()
         self.admin_hash = token_hash(config.admin_token_file.read_text().strip())
         self.tokens = {r["id"]: r["token_hash"] for r in config.replicas if not r.get("retired")}
         self._state = (self.config, self.admin_hash, self.tokens)
@@ -33,15 +35,27 @@ class Application:
         }
 
     def reload(self):
+        with self._reload_lock:
+            return self._reload()
+
+    def _reload(self):
         config = load(self.config.path)
         if config == self.config:
             return False
-        if (config.path, config.database, config.host, config.port, config.demo) != (
+        if (
+            config.path,
+            config.database,
+            config.host,
+            config.port,
+            config.demo,
+            config.ram_required,
+        ) != (
             self.config.path,
             self.config.database,
             self.config.host,
             self.config.port,
             self.config.demo,
+            self.config.ram_required,
         ):
             raise Invalid("Listener, storage and demo-mode changes require a restart")
         admin_hash = token_hash(config.admin_token_file.read_text().strip())
@@ -117,10 +131,16 @@ class Application:
             return 200, body, mime
         if method == "GET" and path == "/health":
             return 200, {"status": "ok"}, "application/json"
-        if path not in ("/api/overview", "/v1/ingest"):
+        if path not in ("/api/overview", "/v1/ingest", "/api/storage", "/api/control"):
             return 404, {"error": "Not found"}, "application/json"
         auth = env.get("HTTP_AUTHORIZATION", "")
         digest = token_hash(auth[7:]) if auth.startswith("Bearer ") and len(auth) < 512 else ""
+        if path in ("/api/storage", "/api/control"):
+            if env.get("REMOTE_ADDR") != "127.0.0.1" or not hmac.compare_digest(digest, admin_hash):
+                return 403, {"error": "Local administrator access required"}, "application/json"
+            from .control import dispatch
+
+            return dispatch(self, env, path)
         if path == "/api/overview":
             if method != "GET":
                 return 405, {"error": "Use GET"}, "application/json"
@@ -145,7 +165,9 @@ class Application:
                 for key in ("project", "site", "host", "replica")
                 if query.get(key, [""])[0]
             }
-            return 200, self.store.overview(filters, int(window)), "application/json"
+            data = self.store.overview(filters, int(window))
+            data["storage"] = self.store.storage_status()
+            return 200, data, "application/json"
         if method != "POST":
             return 405, {"error": "Use POST"}, "application/json"
         replica = next(

@@ -32,6 +32,8 @@ class Config:
     hosts: tuple
     replicas: tuple
     allowed_hosts: tuple[str, ...] = ()
+    ram_required: bool = False
+    quota_bytes: int | None = None
 
 
 def load(path, *, registry=None):
@@ -59,6 +61,7 @@ def load(path, *, registry=None):
         "demo",
         "admin_token_file",
         "allowed_hosts",
+        "ramdisk",
     }:
         raise Invalid("Unknown monitor setting")
     host, port = monitor.get("listen", "127.0.0.1:8720").rsplit(":", 1)
@@ -139,6 +142,25 @@ def load(path, *, registry=None):
         raise Invalid("Admin and each producer must have distinct tokens")
     if type(monitor.get("demo", False)) is not bool:
         raise Invalid("demo must be true or false")
+    ram_required = monitor.get("ramdisk", False)
+    if type(ram_required) is not bool:
+        raise Invalid("ramdisk must be a boolean")
+    policy_path = path.parent / "storage-policy.json"
+    quota = None
+    if policy_path.exists():
+        policy = json.loads(policy_path.read_text())
+        quota = policy.get("quota_bytes")
+        capacity = policy.get("ram_bytes")
+        if (
+            type(quota) is not int
+            or type(capacity) is not int
+            or quota < 1024**2
+            or quota > capacity
+            or capacity % 512
+        ):
+            raise Invalid("Invalid storage quota/RAM capacity")
+    elif ram_required:
+        raise Invalid("RAM storage requires persistent storage-policy.json")
     return Config(
         path,
         database,
@@ -150,6 +172,8 @@ def load(path, *, registry=None):
         admin,
         *(tuple(groups[name]) for name in ("projects", "sites", "hosts", "replicas")),
         allowed_hosts=tuple(value.lower() for value in allowed_hosts),
+        ram_required=ram_required,
+        quota_bytes=quota,
     )
 
 

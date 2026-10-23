@@ -4,6 +4,7 @@ import argparse
 import fcntl
 import logging
 import signal
+import tempfile
 import threading
 from contextlib import contextmanager
 from pathlib import Path
@@ -16,7 +17,11 @@ DEFAULT_STATE = Path.home() / ".local/state/bobowatch"
 
 @contextmanager
 def runtime_lock(config):
-    path = config.database.with_suffix(".lock")
+    path = (
+        config.path.parent / "server.lock"
+        if config.ram_required
+        else config.database.with_suffix(".lock")
+    )
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     with path.open("a") as lock:
         path.chmod(0o600)
@@ -42,6 +47,16 @@ def serve(config, *, simulate=False):
     from .storage import SQLiteStore
 
     with runtime_lock(config):
+        if config.ram_required:
+            from .provision import require_private
+            from .ramdisk import validate_database
+
+            validate_database(config, full=True)
+            spill = config.database.parent / "tmp"
+            spill.mkdir(mode=0o700, exist_ok=True)
+            require_private(spill, directory=True)
+            # Waitress output spooling also stays on the bounded RAM volume.
+            tempfile.tempdir = str(spill)
         store = SQLiteStore(config)
         simulation, server = None, None
         previous_handlers = {}
