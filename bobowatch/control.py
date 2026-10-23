@@ -2,6 +2,7 @@
 
 import json
 
+from .access import set_access
 from .policy import set_quota
 from .protocol import Invalid
 
@@ -20,10 +21,14 @@ def dispatch(application, env, path):
         data = json.loads(env["wsgi.input"].read(length))
     except (ValueError, UnicodeError):
         raise Invalid("Invalid control request") from None
-    if not isinstance(data, dict) or set(data) - {"command", "quota_bytes"}:
+    if not isinstance(data, dict) or set(data) - {"command", "quota_bytes", "access"}:
         raise Invalid("Invalid control fields")
     command = data.get("command")
     with application._reload_lock:
+        if command == "dashboard.access":
+            result = set_access(application.config.path.parent, data.get("access"))
+            application.reload()
+            return 200, result, "application/json"
         if command == "storage.quota":
             if not application.config.ram_required:
                 raise Invalid("Persistent quota changes require an installed RAM runtime")

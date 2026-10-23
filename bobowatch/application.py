@@ -8,6 +8,7 @@ import threading
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
+from .access import read_access
 from .config import load, token_hash
 from .network import allowed_authority, local_ipv4
 from .protocol import MAX_BODY, Conflict, Invalid, validate
@@ -28,7 +29,8 @@ class Application:
         self._reload_lock = threading.RLock()
         self.admin_hash = token_hash(config.admin_token_file.read_text().strip())
         self.tokens = {r["id"]: r["token_hash"] for r in config.replicas if not r.get("retired")}
-        self._state = (self.config, self.admin_hash, self.tokens)
+        self.dashboard_access = read_access(config.path.parent)
+        self._state = (self.config, self.admin_hash, self.tokens, self.dashboard_access)
         self.assets = {
             url: ((Path(__file__).parent / "web" / name).read_bytes(), mime)
             for url, (name, mime) in ASSETS.items()
@@ -41,7 +43,12 @@ class Application:
     def _reload(self):
         config = load(self.config.path)
         admin_hash = token_hash(config.admin_token_file.read_text().strip())
-        if config == self.config and admin_hash == self.admin_hash:
+        access = read_access(config.path.parent)
+        if (
+            config == self.config
+            and admin_hash == self.admin_hash
+            and access == self.dashboard_access
+        ):
             return False
         if (
             config.path,
@@ -66,7 +73,8 @@ class Application:
         tokens = {r["id"]: r["token_hash"] for r in config.replicas if not r.get("retired")}
         self.store.reload_inventory(config)
         self.config, self.admin_hash, self.tokens = config, admin_hash, tokens
-        self._state = (config, admin_hash, tokens)
+        self.dashboard_access = access
+        self._state = (config, admin_hash, tokens, access)
         return True
 
     def __call__(self, environ, start_response):
@@ -115,7 +123,7 @@ class Application:
         return [body]
 
     def dispatch(self, env):
-        config, admin_hash, tokens = self._state
+        config, admin_hash, tokens, access = self._state
         method, path = env["REQUEST_METHOD"], env.get("PATH_INFO", "/")
         host = env.get("HTTP_HOST", "")
         if not local_ipv4(env.get("REMOTE_ADDR", "")):
@@ -135,6 +143,10 @@ class Application:
             return 200, body, mime
         if method == "GET" and path == "/health":
             return 200, {"status": "ok"}, "application/json"
+        if path == "/api/access":
+            if method != "GET":
+                return 405, {"error": "Use GET"}, "application/json"
+            return 200, {"dashboard_access": access}, "application/json"
         if path not in ("/api/overview", "/v1/ingest", "/api/storage", "/api/control"):
             return 404, {"error": "Not found"}, "application/json"
         auth = env.get("HTTP_AUTHORIZATION", "")
@@ -148,7 +160,7 @@ class Application:
         if path == "/api/overview":
             if method != "GET":
                 return 405, {"error": "Use GET"}, "application/json"
-            if not hmac.compare_digest(digest, admin_hash):
+            if access != "local" and not hmac.compare_digest(digest, admin_hash):
                 return 401, {"error": "Admin token required"}, "application/json"
             raw_query = env.get("QUERY_STRING", "")
             if len(raw_query) > 2048:
@@ -171,6 +183,7 @@ class Application:
             }
             data = self.store.overview(filters, int(window))
             data["storage"] = self.store.storage_status()
+            data["dashboard_access"] = access
             return 200, data, "application/json"
         if method != "POST":
             return 405, {"error": "Use POST"}, "application/json"

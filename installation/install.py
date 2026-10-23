@@ -12,6 +12,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
+from bobowatch.access import read_access, set_access  # noqa: E402
 from bobowatch.config import load  # noqa: E402
 from bobowatch.manage import busy, control_lock, loaded  # noqa: E402
 from bobowatch.paths import runtime_root  # noqa: E402
@@ -81,6 +82,10 @@ def install(root, *, repo=REPO, ram_bytes=None, port=None):
             )
         if port is not None and port != config.port:
             raise ValueError("Existing runtime port differs; edit monitor.toml explicitly")
+        access_path = root / "dashboard-policy.json"
+        if not access_path.exists() and not access_path.is_symlink():
+            set_access(root, "local")
+        read_access(root)  # Validate an existing explicit choice before updating.
         private_write(root / "installing", b"Installation incomplete until receipt is written.\n")
         venv.EnvBuilder(with_pip=True).create(root / "venv")
         python = root / "venv/bin/python"

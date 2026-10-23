@@ -7,13 +7,17 @@ from contextlib import closing
 from urllib.error import HTTPError, URLError
 from urllib.request import ProxyHandler, Request, build_opener
 
+from .access import read_access, set_access
 from .config import load
 from .policy import read_policy, set_quota, size_bytes
 from .protocol import Invalid
 from .ramdisk import validate
 from .retention import family_bytes
 
-HELP = "storage status | storage quota [5GiB] | storage prune | registrations list | config reload | quit"
+HELP = (
+    "storage status | storage quota [5GiB] | storage prune | "
+    "dashboard access [local|token] | registrations list | config reload | quit"
+)
 
 
 def request(root, path, data=None):
@@ -55,6 +59,14 @@ def offline_status(root):
 
 
 def execute(root, words, *, running=False):
+    if words[:2] == ["dashboard", "access"] and len(words) in (2, 3):
+        if len(words) == 2:
+            return {"dashboard_access": read_access(root)}
+        if running:
+            return request(
+                root, "/api/control", {"command": "dashboard.access", "access": words[2]}
+            )
+        return set_access(root, words[2]) | {"applies": "next server start"}
     if words == ["storage", "status"]:
         if running:
             return request(root, "/api/storage")

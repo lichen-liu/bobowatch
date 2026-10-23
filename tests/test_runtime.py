@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from bobowatch import admin, manage, ramdisk
+from bobowatch.access import read_access, set_access
 from bobowatch.application import Application
 from bobowatch.config import initialize, load
 from bobowatch.policy import DEFAULT_BYTES, read_policy, set_quota
@@ -50,15 +51,24 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(config.ram_required)
         self.assertFalse(config.demo)
         self.assertEqual(config.host, "0.0.0.0")
+        self.assertEqual(read_access(self.root), "local")
+        set_access(self.root, "token")
         self.assertEqual(read_policy(self.root)["ram_bytes"], DEFAULT_BYTES)
         set_quota(self.root, 3 * 1024**3)
         private_write(
             self.root / "registrations.json", b'{"projects":[],"sites":[],"hosts":[],"replicas":[]}'
         )
-        files = ["monitor.toml", "tokens/admin.token", "registrations.json", "storage-policy.json"]
+        files = [
+            "monitor.toml",
+            "tokens/admin.token",
+            "registrations.json",
+            "storage-policy.json",
+            "dashboard-policy.json",
+        ]
         before = {name: (self.root / name).read_bytes() for name in files}
         self.install()
         self.assertEqual(before, {name: (self.root / name).read_bytes() for name in files})
+        self.assertEqual(read_access(self.root), "token")
         self.assertFalse((self.root / "ramdisk.json").exists())
         self.assertFalse((self.root / "installing").exists())
         manage.verify_installation(self.root)
