@@ -40,7 +40,8 @@ class Application:
 
     def _reload(self):
         config = load(self.config.path)
-        if config == self.config:
+        admin_hash = token_hash(config.admin_token_file.read_text().strip())
+        if config == self.config and admin_hash == self.admin_hash:
             return False
         if (
             config.path,
@@ -62,7 +63,6 @@ class Application:
             raise Invalid(
                 "Requested quota exceeds the mounted RAM capacity; stop and replace the volume"
             )
-        admin_hash = token_hash(config.admin_token_file.read_text().strip())
         tokens = {r["id"]: r["token_hash"] for r in config.replicas if not r.get("retired")}
         self.store.reload_inventory(config)
         self.config, self.admin_hash, self.tokens = config, admin_hash, tokens
