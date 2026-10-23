@@ -48,8 +48,8 @@ class Response:
 class Monitor:
     """One producer per replica slot in v0.1. Construct and start after fork; close at shutdown.
 
-    record_request() is the first milestone's explicit instrumentation API.
-    ASGI/WSGI wrappers and application-specific operations are not implemented yet.
+    record_request() is also available for explicit application instrumentation.
+    ASGI and WSGI wrappers provide HTTP lifecycle instrumentation.
     """
 
     def __init__(
