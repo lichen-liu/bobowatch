@@ -190,6 +190,10 @@ run when upgrading its wire version; upgrade the core before its adapters.
 
 ## Next milestones
 
+The [runtime and RAM-storage design](docs/runtime-storage-design.md) proposes
+`fyi.boboji.watch`, on-demand supervision, a bounded five-GiB RAM disk and local
+administration. Those lifecycle/storage features are not implemented yet.
+
 ASGI/WSGI wrappers, real app integrations, process/host sampling, public probes,
 job/freshness hooks, alert state, automatic retention and server-database support
 are **not implemented yet**. This is a working local pilot, not the complete
