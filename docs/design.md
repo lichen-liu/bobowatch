@@ -2,7 +2,11 @@
 
 The first working milestone is documented in [implementation notes](implementation.md). The rest of this document remains the broader design proposal; it is not a claim that every capability is implemented.
 
-Status: design iteration 2, October 17, 2026; adopted for the standalone BoboWatch repository on October 18, 2026. This replaces the infrastructure and packaging choices in the first proposal. It does not implement instrumentation, create the shared repository, or deploy a service.
+Runtime/storage decisions below are superseded by the implemented
+[runtime architecture](runtime-storage-design.md) and [operator guide](runtime.md),
+including RAM-only history and explicitly started crash supervision.
+
+Status: historical design iteration 2, October 17, 2026; adopted for the standalone BoboWatch repository on October 18, 2026. This replaces the infrastructure and packaging choices in the first proposal. It does not implement instrumentation, create the shared repository, or deploy a service.
 
 Build a small, generic Python monitoring application: **one process, one private dashboard, one SQL database**. That process receives telemetry, probes sites, samples its host, evaluates alerts, maintains retention and serves the UI. Start with SQLite. Keep database operations behind a narrow storage interface so a server database can be added without changing application integrations or the dashboard.
 
