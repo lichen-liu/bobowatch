@@ -58,6 +58,10 @@ class Application:
             self.config.ram_required,
         ):
             raise Invalid("Listener, storage and demo-mode changes require a restart")
+        if config.ram_required and config.quota_bytes > self.store.storage_status()["volume_bytes"]:
+            raise Invalid(
+                "Requested quota exceeds the mounted RAM capacity; stop and replace the volume"
+            )
         admin_hash = token_hash(config.admin_token_file.read_text().strip())
         tokens = {r["id"]: r["token_hash"] for r in config.replicas if not r.get("retired")}
         self.store.reload_inventory(config)
