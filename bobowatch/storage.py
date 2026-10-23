@@ -7,6 +7,7 @@ commit together. Read connections are independent and short lived.
 import hashlib
 import json
 import queue
+import shutil
 import sqlite3
 import threading
 import time
@@ -18,6 +19,8 @@ from typing import Protocol
 
 from .http_metrics import charts, load_http, store_http, summary
 from .protocol import BUCKETS_US, Conflict, Invalid, percentile
+from .ramdisk import validate_database
+from .retention import admit, footprint, maintain
 
 
 class Busy(RuntimeError):
@@ -42,6 +45,8 @@ def fingerprint(value):
 class SQLiteStore:
     def __init__(self, config):
         self.config, self.path = config, config.database
+        validate_database(config, full=config.ram_required)
+        self._quota = config.quota_bytes
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         self._queue = queue.Queue(maxsize=128)
         self._guard, self._accepting = threading.Lock(), True
@@ -58,15 +63,27 @@ class SQLiteStore:
             self.close()
             raise
 
+    def _check_volume(self):
+        try:
+            validate_database(self.config)
+        except (OSError, ValueError) as error:
+            raise Busy("RAM storage unavailable; no disk fallback") from error
+
     def _connect(self):
+        self._check_volume()
         conn = sqlite3.connect(self.path, timeout=2)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA synchronous=FULL")
+        conn.execute("PRAGMA temp_store=MEMORY")
+        conn.execute("PRAGMA cache_size=-8192")
         return conn
 
     def _migrate(self, conn):
+        if not conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone():
+            conn.execute("PRAGMA auto_vacuum=INCREMENTAL")
         conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA wal_autocheckpoint=128")
         migrations = [
             (int(path.stem), path.read_text())
             for path in sorted((Path(__file__).parent / "migrations").glob("*.sql"))
@@ -88,7 +105,7 @@ class SQLiteStore:
         if sorted(applied) != [version for version, _ in migrations[: len(applied)]]:
             raise Invalid("Database migration history is not contiguous")
         pending = [(version, sql) for version, sql in migrations if version not in applied]
-        if applied and pending:
+        if applied and pending and not self.config.ram_required:
             backup = self.path.with_name(
                 self.path.name
                 + ".before-v"
@@ -110,6 +127,10 @@ class SQLiteStore:
             except BaseException:
                 conn.rollback()
                 raise
+        conn.execute(
+            "INSERT OR IGNORE INTO storage_state(id,epoch) VALUES(1,?)", (str(uuid.uuid4()),)
+        )
+        conn.commit()
         self.path.chmod(0o600)
 
     def _writer(self):
@@ -130,11 +151,21 @@ class SQLiteStore:
         self._ready.set()
         try:
             while True:
-                work = self._queue.get()
+                try:
+                    work = self._queue.get(timeout=2)
+                except queue.Empty:
+                    try:
+                        self._check_volume()
+                        maintain(conn, self.path, self._quota)
+                    except (Busy, OSError, ValueError, sqlite3.Error):
+                        pass  # A failed/missing mount rejects ingestion, never falls back.
+                    continue
                 if work is None:
                     break
                 operation, future = work
                 try:
+                    self._check_volume()
+                    maintain(conn, self.path, self._quota)
                     with conn:
                         result = operation(conn)
                     future.set_result(result)
@@ -231,11 +262,49 @@ class SQLiteStore:
                 )
 
     def reload_inventory(self, config):
-        self._submit(lambda conn: self._apply_inventory(conn, config))
-        self.config = config
+        def apply(conn):
+            self._apply_inventory(conn, config)
+
+        self._submit(apply)
+        self.config, self._quota = config, config.quota_bytes
+
+    def storage_status(self):
+        def status(conn):
+            stats = footprint(conn, self.path)
+            state = dict(conn.execute("SELECT * FROM storage_state WHERE id=1").fetchone())
+            oldest, newest = conn.execute(
+                "SELECT MIN(observed_at_ms),MAX(observed_at_ms) FROM snapshots"
+            ).fetchone()
+            usage = shutil.disk_usage(self.path.parent)
+            return {
+                **stats,
+                **state,
+                "quota_bytes": self._quota,
+                "quota_applied": self._quota is None or stats["used_bytes"] <= self._quota,
+                "oldest_at_ms": oldest,
+                "newest_at_ms": newest,
+                "reserve_bytes": max(65536, self._quota // 10) if self._quota else 0,
+                "ram_only": self.config.ram_required,
+                "volume_bytes": usage.total,
+                "volume_free_bytes": usage.free,
+                "database": str(self.path),
+            }
+
+        return self._submit(status)
+
+    def maintain(self):
+        self._submit(lambda conn: maintain(conn, self.path, self._quota, force=True, seconds=0.5))
+        return self.storage_status()
 
     def ingest(self, payload, replica):
-        return self._submit(lambda conn: self._ingest(conn, payload, replica))
+        def accept(conn):
+            try:
+                admit(conn, self.path, self._quota, len(json.dumps(payload)))
+            except OSError as error:
+                raise Busy(str(error)) from None
+            return self._ingest(conn, payload, replica)
+
+        return self._submit(accept)
 
     def _ingest(self, conn, p, replica, *, demo_received_at_ms=None):
         if p["replica"] != replica:
@@ -293,7 +362,10 @@ class SQLiteStore:
             or p["observed_at_ms"] < previous["observed_at_ms"]
         ):
             raise Conflict("Snapshot sequence/time did not advance")
-        before = previous or {"requests": 0, "errors": 0, "duration_sum_us": 0, "elapsed_ms": 0}
+        baseline = previous is None and self.config.ram_required
+        before = previous or (
+            p if baseline else {"requests": 0, "errors": 0, "duration_sum_us": 0, "elapsed_ms": 0}
+        )
         delta = {key: p[key] - before[key] for key in ("requests", "errors", "duration_sum_us")}
         old_buckets = (
             [
@@ -304,6 +376,8 @@ class SQLiteStore:
                 )
             ]
             if previous
+            else p["buckets"]
+            if baseline
             else [0] * len(p["buckets"])
         )
         bucket_deltas = [value - old for value, old in zip(p["buckets"], old_buckets, strict=True)]
@@ -313,10 +387,12 @@ class SQLiteStore:
             raise Invalid("Historical fixture import is restricted to demo runtimes")
         received = int(time.time() * 1000) if demo_received_at_ms is None else demo_received_at_ms
         interval = p["elapsed_ms"] - before["elapsed_ms"]
+        if baseline:
+            interval = 1
         if interval <= 0:
             raise Invalid("Snapshot elapsed time must advance beyond zero")
         skewed = abs(received - p["observed_at_ms"]) > 30_000
-        partial = interval > self.config.sample_seconds * 2500
+        partial = baseline or interval > self.config.sample_seconds * 2500
         key = str(uuid.uuid4())
         conn.execute(
             "INSERT INTO snapshots VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -343,16 +419,22 @@ class SQLiteStore:
             "INSERT INTO histogram_buckets VALUES (?,?,?,?)",
             [(key, i, total, bucket_deltas[i]) for i, total in enumerate(p["buckets"])],
         )
-        store_http(conn, key, p, previous)
+        store_http(conn, key, p, previous, baseline=baseline)
         for event in p["events"]:
             event_hash = fingerprint(event)
-            existing = conn.execute("SELECT * FROM events WHERE id=?", (event["id"],)).fetchone()
+            existing = conn.execute(
+                "SELECT * FROM event_receipts WHERE id=?", (event["id"],)
+            ).fetchone()
+            if existing is None:
+                existing = conn.execute(
+                    "SELECT * FROM events WHERE id=?", (event["id"],)
+                ).fetchone()
             if existing:
                 if existing["run_id"] != p["run_id"] or existing["payload_hash"] != event_hash:
                     raise Conflict("Event ID already exists with different contents")
             else:
                 conn.execute(
-                    "INSERT INTO events VALUES (?,?,?,?,?,?)",
+                    "INSERT INTO events VALUES (?,?,?,?,?,?,?)",
                     (
                         event["id"],
                         p["run_id"],
@@ -360,8 +442,21 @@ class SQLiteStore:
                         event["severity"],
                         event["message"],
                         event_hash,
+                        received,
                     ),
                 )
+                conn.execute(
+                    "INSERT INTO event_receipts VALUES(?,?,?,?,?)",
+                    (event["id"], replica, p["run_id"], event_hash, received),
+                )
+        # At most 256 recent event acknowledgements per replica survive history
+        # eviction. Older retained event rows still protect their own IDs.
+        conn.execute(
+            """DELETE FROM event_receipts WHERE replica_id=? AND id NOT IN (
+            SELECT id FROM event_receipts WHERE replica_id=?
+            ORDER BY received_at_ms DESC,rowid DESC LIMIT 256)""",
+            (replica, replica),
+        )
         return {"sequence": p["sequence"], "duplicate": False}
 
     def overview(self, filters, window, *, now_ms=None):
@@ -524,7 +619,7 @@ class SQLiteStore:
                     "charts": combined,
                     "current": current,
                     "bucket_seconds": step / 1000,
-                    "schema_version": 2,
+                    "schema_version": 3,
                     "now_ms": now,
                     "window_seconds": window,
                     "demo": self.config.demo,

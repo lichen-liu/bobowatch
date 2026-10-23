@@ -3,7 +3,7 @@
 from .protocol import BUCKETS_US, Conflict, percentile
 
 
-def store_http(conn, key, payload, previous):
+def store_http(conn, key, payload, previous, *, baseline=False):
     data = payload.get("http")
     before = (
         conn.execute("SELECT * FROM http_samples WHERE snapshot_id=?", (previous["id"],)).fetchone()
@@ -14,6 +14,8 @@ def store_http(conn, key, payload, previous):
         raise Conflict("Start a new process run when changing HTTP metric protocol versions")
     if data is None:
         return
+    if baseline:
+        before = data
     values = {}
     for name in ("bytes_sent", "bytes_received", "sized_requests"):
         values[name] = data[name] - (before[name] if before else 0)
@@ -21,7 +23,9 @@ def store_http(conn, key, payload, previous):
             raise Conflict("Cumulative HTTP counters decreased")
     if values["sized_requests"] == 0 and (values["bytes_sent"] or values["bytes_received"]):
         raise Conflict("Body-byte deltas require new sized request observations")
-    if values["sized_requests"] > payload["requests"] - (previous["requests"] if previous else 0):
+    if values["sized_requests"] > payload["requests"] - (
+        previous["requests"] if previous else payload["requests"] if baseline else 0
+    ):
         raise Conflict("Sized-request delta exceeds request delta")
     conn.execute(
         "INSERT INTO http_samples VALUES (?,?,?,?,?,?,?,?)",
@@ -44,7 +48,9 @@ def store_http(conn, key, payload, previous):
                 (previous["id"],),
             )
         ]
-        if before
+        if previous
+        else data["status_classes"]
+        if baseline
         else [0] * 5
     )
     for index, (total, old) in enumerate(zip(data["status_classes"], old_codes, strict=True)):
@@ -60,10 +66,12 @@ def store_http(conn, key, payload, previous):
                 "SELECT * FROM route_totals WHERE snapshot_id=?", (previous["id"],)
             )
         }
-        if before
+        if previous
+        else {r["route"]: r for r in data["routes"]}
+        if baseline
         else {}
     )
-    if before and set(old_routes) != {r["route"] for r in data["routes"]}:
+    if previous and set(old_routes) != {r["route"] for r in data["routes"]}:
         raise Conflict("Registered routes changed inside a process run")
     for route in data["routes"]:
         old = old_routes.get(route["route"], {})
