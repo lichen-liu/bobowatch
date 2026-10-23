@@ -27,7 +27,10 @@ def dispatch(application, env, path):
         if command == "storage.quota":
             if not application.config.ram_required:
                 raise Invalid("Persistent quota changes require an installed RAM runtime")
-            set_quota(application.config.path.parent, data.get("quota_bytes"))
+            quota = data.get("quota_bytes")
+            if type(quota) is int and quota > application.store.storage_status()["volume_bytes"]:
+                raise Invalid("Quota exceeds the mounted RAM capacity")
+            set_quota(application.config.path.parent, quota)
             application.reload()
             return 202, application.store.maintain(), "application/json"
         if command == "storage.prune":

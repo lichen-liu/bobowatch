@@ -21,6 +21,10 @@ from bobowatch.ramdisk import mount_path  # noqa: E402
 
 
 def install(root, *, repo=REPO, ram_bytes=None, port=None):
+    if ram_bytes is not None and (
+        type(ram_bytes) is not int or ram_bytes < 1024**2 or ram_bytes % 512
+    ):
+        raise ValueError("RAM size must be at least one MiB and a whole multiple of 512 bytes")
     if root.is_relative_to(repo):
         raise ValueError("Install outside the source checkout")
     if root.exists() or root.is_symlink():

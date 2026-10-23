@@ -66,6 +66,11 @@ class RuntimeTests(unittest.TestCase):
         with self.assertRaisesRegex(Invalid, "receipt"):
             manage.verify_installation(self.root)
 
+    def test_invalid_ram_size_is_rejected_before_creating_runtime(self):
+        with self.assertRaisesRegex(ValueError, "512"):
+            installer.install(self.root, ram_bytes=1024**3 + 1)
+        self.assertFalse(self.root.exists())
+
     def test_active_install_and_failed_update_refuse_to_start(self):
         self.install()
         with patch.object(installer, "loaded", return_value=True):
@@ -222,5 +227,9 @@ class RuntimeTests(unittest.TestCase):
                 self.assertEqual(code, 202)
                 self.assertEqual(result["quota_bytes"], 2 * 1024**3)
                 self.assertEqual(store._quota, 2 * 1024**3)
+                prior_policy = (self.root / "storage-policy.json").read_bytes()
+                with patch.object(store, "storage_status", return_value={"volume_bytes": 1024**3}):
+                    self.assertEqual(request("127.0.0.1", token)[0], 400)
+                self.assertEqual((self.root / "storage-policy.json").read_bytes(), prior_policy)
             finally:
                 store.close()
