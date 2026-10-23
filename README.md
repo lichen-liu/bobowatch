@@ -13,7 +13,7 @@ external collector suite, frontend build or database server.
 
 This is a tested local pilot. Host sampling, public uptime probes, ingestion
 progress and alerting remain future work. Operation is on demand: installation
-starts nothing; `start` loads a restartable session, `stop` unloads it, and `serve`
+starts nothing; `deploy` combines stop/install/start/check; `start` loads a restartable session, `stop` unloads it, and `serve`
 is a foreground alternative. No login/boot auto-start. Installed history is
 RAM-only and can be lost on reboot, power loss or explicit volume release.
 

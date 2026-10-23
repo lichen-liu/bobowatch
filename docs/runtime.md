@@ -60,6 +60,26 @@ The dashboard is empty until a real app is registered and sends snapshots.
 Installed operation never seeds fictional data. Legacy `python -m bobowatch demo`
 remains a separate disk-backed review tool; it is not the installed runtime.
 
+## One-command deployment
+
+```sh
+cd ~/p/bobowatch
+./deployment/watch deploy
+```
+
+This explicitly stops the supervised session, installs the current checkout,
+starts it and performs an authenticated storage check. It also works for a new
+installation. It preserves configuration, registrations, tokens, quota policy
+and surviving RAM history; it never releases/reformats an existing owned volume.
+Optional `--runtime-dir`, `--ram-size` and `--port` match the installer. Capacity
+changes still require an explicit stopped release; deploy never discards history
+for you. Installation alone continues to start nothing.
+
+A failed stop prevents installation. A failed installation stays stopped; a failed
+start/final check unloads the session. Cleanup failures are reported explicitly.
+No automatic rollback or login/boot startup is added. A foreground process must
+first be stopped in its terminal. Update the checkout separately with `git pull`.
+
 ## Reinstall or update
 
 ```sh
@@ -182,8 +202,10 @@ replaced, SQL access fails closed; it never creates a normal-disk replacement.
 
 ## Flightrepo rollout
 
-Install BoboWatch first. It may be running or stopped during Flightrepo provisioning.
-For the existing Flightrepo installation, after merging its matching pin update:
+Install BoboWatch before the first monitoring-enabled Flightrepo start. It may be
+running or stopped during startup registration. Flightrepo installation itself
+needs no BoboWatch runtime or API. For an existing Flightrepo installation, after
+updating its startup-registration controller:
 
 ```sh
 cd ~/p/flightrepo
@@ -197,14 +219,15 @@ git submodule update --init vendor/bobowatch
 ```
 
 That single deployment command stops the serving jobs, builds/installs the wheel,
-reuses or registers the scoped producer token, starts Flightrepo and its existing
-tunnel, then checks local operation. It requires the existing tunnel token; a
+registers/reuses the scoped producer token at startup, starts Flightrepo and its
+existing tunnel, then checks local operation. It requires the existing tunnel token; a
 first-time Flightrepo installation must complete its separate tunnel setup.
 It never starts BoboWatch and does not restart the independent ingestion worker.
 Later deployments reuse the saved monitoring runtime and registration even when
 the flag is omitted. If you prefer separate steps, stop Flightrepo, run
-`python3 installation/install.py --bobowatch-runtime-dir PATH`, then run
-`./deployment/flyji start` and `./deployment/flyji check`.
+`python3 installation/install.py`, then run
+`./deployment/flyji start --bobowatch-runtime-dir PATH` and
+`./deployment/flyji check`.
 
 Both apps retain their own private configuration. Flightrepo's
 `~/Library/Application Support/fyi.boboji.fly/settings.json` records BoboWatch's
@@ -220,3 +243,11 @@ app again and wait another interval to see interval counts. Monitoring covers AS
 HTTP requests; host CPU/memory, public uptime probes, ingestion progress, freshness
 and alerts are future work. This is a tested local monitoring pilot, not a complete
 production monitoring/alerting system.
+
+
+To switch an already-enabled Flightrepo sender to another local monitoring
+runtime, use `./deployment/flyji monitoring --bobowatch-runtime-dir PATH` from the
+Flightrepo checkout. It saves the target for later starts and deployments; no
+reinstall is required. Enabling monitoring that was disabled at process startup
+still needs a restart. Endpoint-only manual settings without a local registration
+record are not re-provisioned at startup.
