@@ -2,6 +2,7 @@
 set -eu
 watch_runtime="${BOBOWATCH_RUNTIME_DIR-$HOME/Library/Application Support/fyi.boboji.watch}"
 watch_next=false
+watch_deploy=false
 for watch_argument in "$@"; do
     if [ "$watch_next" = true ]; then
         watch_runtime="$watch_argument"
@@ -9,6 +10,7 @@ for watch_argument in "$@"; do
         continue
     fi
     case "$watch_argument" in
+        deploy) watch_deploy=true ;;
         --runtime-dir) watch_next=true ;;
         --runtime-dir=*) watch_runtime="${watch_argument#--runtime-dir=}" ;;
     esac
@@ -19,6 +21,9 @@ case "$watch_runtime" in
     '~/'*) watch_runtime="$HOME/${watch_runtime#\~/}" ;;
 esac
 case "$watch_runtime" in /*) ;; *) echo 'Use an absolute runtime path' >&2; exit 1 ;; esac
+if [ "$watch_deploy" = true ]; then
+    exec python3 "$(dirname "$0")/deploy.py" "$@"
+fi
 if [ -x "$watch_runtime/venv/bin/python" ] && [ -f "$watch_runtime/manage.py" ]; then
     exec "$watch_runtime/venv/bin/python" "$watch_runtime/manage.py" "$@"
 fi
