@@ -36,25 +36,41 @@ Stop foreground mode with Ctrl-C in its terminal. Foreground mode has no crash
 restart. Do not run both modes for the same runtime. `stop` refuses to kill a
 foreground process; it tells you to use its terminal.
 
-## Dashboard and tokens
+## Open the dashboard
 
-Open `http://127.0.0.1:8720` on the serving Mac. Show your private dashboard token:
+Open `http://127.0.0.1:8720` on the serving Mac. Installed runtimes open the
+read-only dashboard directly, without a token or login, for local-network clients.
+The first installation/update creates a private `dashboard-policy.json` selecting
+`local` access if no explicit policy exists. Existing policy choices survive
+reinstallation. Any device on the trusted local network can view the dashboard.
+
+Producer ingestion still requires each app's scoped credential. Storage and
+configuration control still require the admin credential and loopback access;
+the local admin CLI reads that credential automatically from its private file.
+Viewing the dashboard grants no write/control access.
+
+To explicitly change the dashboard policy, including while serving:
 
 ```sh
-./deployment/watch token
+./deployment/watch admin dashboard access token
+./deployment/watch admin dashboard access local
 ```
 
-Paste it into the dashboard login. This command deliberately displays the admin
-secret locally; keep it out of screenshots, Git and shared terminal logs.
-The producer token provisioned for Flightrepo is different and cannot read the UI.
+Changes reload immediately through the local control API, or at the next start
+when configured while stopped. Reload a browser after enabling local access.
+Switching back to token mode asks active local viewers to log in on their next
+refresh. Legacy `init`/`demo` runtimes keep token login unless explicitly changed.
+For token mode only, `./deployment/watch token` displays your private admin secret;
+paste it into the login form. Keep that output out of shared terminal logs.
 
 The installed listener defaults to `0.0.0.0:8720`. From a phone on the same trusted
 LAN, use `http://<Mac-LAN-IP>:8720`, not `127.0.0.1`. For the usual Wi-Fi interface,
 `ipconfig getifaddr en0` shows the address. Other network interfaces may differ.
 Allow incoming Python connections if macOS asks. Local hostname access requires
 that exact hostname in `monitor.toml`'s `allowed_hosts`; private IPv4 addresses
-work directly. LAN HTTP carries tokens unencrypted; this is a local pilot with
-no public listener or router port forwarding.
+work directly. Local dashboard mode is intended for a trusted LAN. HTTP is
+unencrypted; public source addresses, unknown hosts and cross-origin reads remain
+blocked. No router port forwarding is needed.
 
 The dashboard is empty until a real app is registered and sends snapshots.
 Installed operation never seeds fictional data. Legacy `python -m bobowatch demo`
@@ -114,7 +130,7 @@ as a separately named backup, then install into the now-unused default path.
 ./deployment/watch admin config reload
 ```
 
-The interactive prompt also supports `storage prune`, `help` and `quit`. Commands
+The interactive prompt also supports `storage prune`, `dashboard access [local|token]`, `help` and `quit`. Commands
 while running use the authenticated loopback control API and the server's single
 SQL writer. Stopped-runtime inspection never creates a database. Persistent quota
 changes while stopped apply at the next start. No command changes Flightrepo's
@@ -178,6 +194,7 @@ is not a guarantee that telemetry never reaches swap storage.
 | `monitor.toml` | Listener, admin credential location and static inventory |
 | `registrations.json` | Atomically provisioned dynamic app inventory |
 | `storage-policy.json` | Persistent requested quota and RAM capacity |
+| `dashboard-policy.json` | Local-network dashboard access or token login |
 | `tokens/` | Private admin and registered-producer credentials |
 | `app/`, `venv/`, `installation.json`, `manage.py` | Installed snapshot, dependency and receipt |
 | `jobs/` | Session definition; never copied into LaunchAgents |

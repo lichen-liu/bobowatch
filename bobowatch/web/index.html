@@ -43,10 +43,10 @@
         </div>
       </header>
       <main id="overview">
-        <section id="login" class="login panel">
+        <section id="login" class="login panel" hidden>
           <span class="eyebrow">BOBOWATCH / PRIVATE ACCESS</span>
-          <h1>A clearer picture<br />of every request.</h1>
-          <p>Open your HTTP monitoring workspace with your admin token.</p>
+          <h1 id="login-title">A clearer picture of every request.</h1>
+          <p id="login-description">Open your HTTP monitoring workspace with your admin token.</p>
           <form id="login-form">
             <label for="token">Admin token</label
             ><input
@@ -59,7 +59,7 @@
               Open dashboard <span aria-hidden="true">↗</span>
             </button>
           </form>
-          <p class="hint">
+          <p id="login-hint" class="hint">
             Use the <code>admin.token</code> file in your runtime directory. The
             token stays in this tab’s memory until you lock or reload.
           </p>
