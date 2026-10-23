@@ -1,22 +1,21 @@
 # First milestone: implementation notes
 
-This describes v0.2. The longer-term proposal in `design.md` includes capabilities
+This describes v0.3. The longer-term proposal in `design.md` includes capabilities
 that are not part of this implementation.
 
 ## On-demand operation
 
-Manual foreground execution is the intended lifecycle for both demo and eventual
-production use. Start `demo` or `serve` for a monitoring session, then stop the
-process with Ctrl-C. Closing a browser tab alone does not stop that process.
-There is no background service, login auto-start or automatic restart.
+Installed macOS operation uses the [runtime manager](runtime.md): installation
+starts nothing; an explicit `start` enables a crash-restarted session, `stop`
+unloads it, and `serve` runs in the foreground. No login/boot auto-start. Installed
+history lives only on its verified RAM volume. Stop/start preserves it while that
+volume survives; a lost/released volume starts a new epoch with a producer
+baseline. Legacy development `demo`/`init` retain their disk-backed behavior.
 
-Stored SQL history and producer baselines survive between sessions. While the
-core is stopped, ingestion and dashboard access are unavailable; future checks
-and alerts also run only during an active monitoring session. Adapter request
-recording remains independent of core availability. A surviving application's
-next cumulative snapshot can recover totals, but cannot reconstruct exact timing
-inside the gap. App restarts and bounded event buffers can lose unobserved data.
-Intentional off periods are gaps, not evidence of an application outage.
+While stopped the core collects nothing. Adapters continue recording cumulative
+counters in bounded memory, independently of core availability. Surviving runs can
+recover counts after gaps within an existing epoch, but cannot reconstruct timing.
+App restarts can lose unsent observations and events.
 
 ## Boundaries
 
@@ -45,9 +44,11 @@ A timed-out request might still commit, so a retry must retain the same sequence
 and contents. Duplicate snapshots/events never count twice. A conflict rejects
 the entire transaction. Retries do not refresh liveness.
 
-Migrations are `../bobowatch/migrations/001.sql` and `002.sql`. Version 2 adds
+Migrations are `../bobowatch/migrations/001.sql` through `003.sql`. Version 2 adds
 relational HTTP gauges, status-class counters and bounded route totals; version 1
-is left unchanged. Existing databases receive a consistent pre-upgrade backup. It is different from
+is left unchanged. Version 3 adds storage epoch/eviction state, receipt-order indexes and bounded
+event acknowledgements. Legacy disk databases receive a consistent pre-upgrade
+backup; installed RAM history is never automatically backed up. It is different from
 the more extensive illustrative schema in `schema.sql`; editing an applied
 migration causes a checksum failure. Future changes need a new ordered migration.
 

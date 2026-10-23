@@ -3,19 +3,19 @@
 A small, standalone monitoring tool for multiple projects, sites and replicas.
 One Python process, a private dashboard and a local SQL database.
 
-**The HTTP dashboard works:** a fresh demo has two projects, four replicas and
-30 minutes of explicitly generated history. Six time-series/distribution panels
-show request rate, p50/p95/p99 latency bounds, 4xx/5xx errors, active requests,
-body throughput and duration buckets, with endpoint and replica comparisons.
-No real applications have been integrated.
+The dashboard shows HTTP request rate, latency bounds, errors, active requests,
+body throughput, endpoints and replica comparisons. The macOS installed runtime
+adds a verified five-GiB RAM disk, circular retention, live quota administration
+and explicitly started crash supervision. One pinned Waitress dependency; no
+external collector suite, frontend build or database server.
 
-**This is a prototype, not a production-ready monitoring installation.**
+**[Installation, deployment, upgrades and Flightrepo rollout](docs/runtime.md).**
 
-**Operation is manual and on demand, including future production use.** Start
-`demo` or `serve` when you want to monitor, and stop it with Ctrl-C when finished.
-No launchd/systemd service, login auto-start or automatic restart is needed.
-Stored SQL history remains available next time; new observations, checks and
-alerts are not collected or evaluated while the monitoring process is stopped.
+This is a tested local pilot. Host sampling, public uptime probes, ingestion
+progress and alerting remain future work. Operation is on demand: installation
+starts nothing; `start` loads a restartable session, `stop` unloads it, and `serve`
+is a foreground alternative. No login/boot auto-start. Installed history is
+RAM-only and can be lost on reboot, power loss or explicit volume release.
 
 ![BoboWatch dashboard showing fictional activity](docs/images/dashboard.png)
 
@@ -81,14 +81,15 @@ uses the standard library; importing it neither starts threads nor imports the
 server. The design's second planned dependency, psutil, arrives with host sampling.
 There is no frontend build step, CDN, ORM, database server or collector suite.
 
-## Initialize an empty installation
+## Legacy disk-backed development runtime
 
 ```sh
 .venv/bin/python -m bobowatch init
 .venv/bin/python -m bobowatch serve --config "$HOME/.local/state/bobowatch/monitor.toml"
 ```
 
-`init` creates the private runtime configuration, admin token and SQLite schema.
+For installed operation use [the macOS installer](docs/runtime.md). The legacy
+`init` command creates private runtime configuration, an admin token and SQLite schema.
 An empty installation shows no sites until inventory is configured. See
 [the example inventory](examples/monitor.toml) and
 [the implementation notes](docs/implementation.md) for adding a producer.
@@ -115,7 +116,7 @@ and cross-origin API requests remain blocked. Authentication is unchanged.
 Use this HTTP mode on a trusted LAN; it does not encrypt token traffic. No router
 port forwarding or public deployment is required.
 
-## Back up history
+## Explicit export for legacy development runtimes
 
 This command also works while the server is running:
 
@@ -154,8 +155,8 @@ Optional development tools:
 
 ```sh
 .venv/bin/python -m pip install -r requirements-dev.txt
-.venv/bin/ruff check bobowatch tests examples
-.venv/bin/ruff format --check bobowatch tests examples
+.venv/bin/ruff check bobowatch tests examples installation deployment
+.venv/bin/ruff format --check bobowatch tests examples installation deployment
 ```
 
 The tests cover protocol/authentication boundaries, atomic retries and event
@@ -191,22 +192,19 @@ uninstrumented size/concurrency values remain unknown rather than zero.
 
 New adapters emit protocol v2. The core still accepts v1 producers; extended
 metrics remain unavailable for those samples. Existing v1 SQL databases migrate
-in place with an automatic consistent pre-migration backup. Start a new producer
+in place; legacy disk runtimes receive a pre-migration backup. Installed RAM-only
+runtimes do not create automatic history backups. Start a new producer
 run when upgrading its wire version; upgrade the core before its adapters.
 
 ## Next milestones
 
-The [runtime and RAM-storage design](docs/runtime-storage-design.md) proposes
-`fyi.boboji.watch`, on-demand supervision, a bounded five-GiB RAM disk and local
-administration. Those lifecycle/storage features are not implemented yet.
-
-WSGI wrappers, hosted app activation, process/host sampling, public probes,
-job/freshness hooks, alert state, automatic retention and server-database support
-are **not implemented yet**. This is a working local pilot, not the complete
-monitoring design. History queries are capped at 4,000 snapshots per scope, with
-visible truncation; raw storage currently grows until managed by the operator.
-One producer process per replica slot is supported. Use separate slots for
-concurrent workers until worker grouping is implemented.
+See [implemented runtime/storage architecture](docs/runtime-storage-design.md)
+and [operator commands](docs/runtime.md). WSGI wrappers, process/host sampling,
+public probes, job/freshness hooks, alert state and server-database support remain
+future work. History queries are capped at 4,000 snapshots per scope with visible
+truncation. Installed storage evicts old history at its quota. Legacy disk demos
+remain unbounded unless explicitly configured. Use distinct replica slots for
+concurrent serving processes.
 
 PostgreSQL support requires a tested backend and a data migration. An unsupported
 database URL fails at startup rather than silently choosing SQLite.

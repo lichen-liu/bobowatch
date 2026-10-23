@@ -1,0 +1,13 @@
+{
+  "install_did_not_mount": true,
+  "verified_capacity_bytes": 5368709120,
+  "foreground_restart_and_reinstall_preserved_epoch": true,
+  "live_quota_change": true,
+  "boundary_family_bytes": 4295032832,
+  "boundary_volume_free_bytes": 1052524544,
+  "synthetic_blocks_of_16MiB": 255,
+  "boundary_ingestion_rejected_retryably": true,
+  "full_transaction_rollback_integrity": "ok",
+  "new_volume_new_epoch": true,
+  "cleanup_released_owned_ram_volume": true
+}

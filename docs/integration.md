@@ -1,10 +1,8 @@
 # First application integration
 
-This branch supplies the integration foundation: explicit local provisioning,
-ASGI HTTP instrumentation, live server inventory reload and sender endpoint reload.
-It does not install a managed service or implement the planned bounded RAM disk.
-Do not enable this prototype on a hosted app until those runtime/storage controls
-are implemented and tested. Use isolated test/demo runtimes for review.
+Local provisioning, ASGI HTTP instrumentation and live inventory/endpoint reload
+are implemented. The [installed runtime](runtime.md) adds verified RAM storage,
+retention and on-demand supervision. Install it before enabling Flightrepo.
 
 ## Paths and ownership
 
@@ -89,10 +87,9 @@ The public repository can be a pinned Git submodule. Consumers package only the
 standard-library adapter modules into their installed release; Waitress, the
 monitoring SQL database and dashboard are not dependencies of the serving app.
 
-## Deployment gate still outstanding
+## Runtime rollout
 
-The current prototype has no enforced quota, RAM-disk lifecycle, circular
-retention or interactive administration. Those requirements remain in
-[runtime/storage design](runtime-storage-design.md), and must precede enabling
-real hosted monitoring. Flight ingestion RAM was separately reduced to five GiB;
-its durable databases and worker are not touched by this integration branch.
+See the [complete operator walkthrough](runtime.md#flightrepo-rollout). Deployment
+registers credentials without starting BoboWatch. RAM storage and local admin are
+implemented; ingestion progress and host metrics remain future work. Flightrepo's
+independent ingestion RAM disk and worker are not managed by BoboWatch.

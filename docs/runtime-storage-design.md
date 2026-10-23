@@ -1,223 +1,118 @@
 # Runtime, supervision and bounded RAM storage
 
-Design revision: October 23, 2026. These are proposed implementation changes,
-not a description of features already deployed. They supplement the broader
-[design](design.md); [implementation notes](implementation.md) describe current code.
+Implemented October 23, 2026. See [operator commands](runtime.md) for installation,
+rollout, upgrades and administration. No user runtime is deployed by this change.
 
-## Current implementation and revised requirements
-
-Current BoboWatch uses one foreground Python process, Waitress, a single SQL
-writer, a disk-backed SQLite database, local registration and live config reload. It has no installed runtime manager,
-RAM-disk provisioning, quota enforcement, retention worker or interactive admin
-shell. No infrastructure is changed by this document.
-
-Use `fyi.boboji.watch` for the new installed runtime, following Flightrepo's
-`fyi.boboji.fly` convention. On macOS:
-
-```text
-~/Library/Application Support/fyi.boboji.watch/
-  venv/                       installed Python and serving dependency
-  app/                        installed source/assets snapshot
-  installation.json           installation receipt
-  monitor.toml                private central configuration and storage policy
-  registrations/              private provisioning records (new interface)
-  tokens/                     admin and per-replica secrets
-  jobs/                       explicitly loaded launchd definitions, if selected
-  logs/                       bounded operational logs
-  ramdisk.json                verified device/mount metadata; contains no history
-```
-
-The monitoring database, WAL, SHM and any SQLite spill files go on a separate,
-owner-only, verified RAM volume. Never silently fall back to a normal directory
-if the volume is absent. Installation, configuration and credentials remain on
-normal disk. Existing prototype runtimes under `~/.local/state` are left intact;
-changing runtime defaults must not delete or silently import their history.
-
-The user explicitly chose RAM-disk-only history: no scheduled durable snapshots
-and no automatic recovery from a normal-disk database after reboot. An explicit
-operator-requested export may exist, but is not part of ordinary operation.
-RAM-backed storage is not a guarantee that the OS never swaps memory.
-
-## Recommended on-demand supervision
-
-Flightrepo's current controller explicitly bootstraps launchd jobs with
-`KeepAlive = true` and restart throttling. Definitions live in its private runtime,
-not in the login/boot auto-load locations. `stop` unloads the jobs. Crashes are
-restarted while loaded; reboot/logout ends the session and requires a manual start.
-
-Recommend the same session behavior for BoboWatch, with a foreground alternative:
-
-```sh
-python3 installation/install.py    # install only; no process starts
-./deployment/bobowatch start      # explicitly bootstrap the supervised session
-./deployment/bobowatch status
-./deployment/bobowatch stop       # unload; it must not restart afterward
-./deployment/bobowatch serve      # foreground alternative; Ctrl-C stops it
-```
-
-These commands are proposed, not currently available. Never install the job into
-`~/Library/LaunchAgents` or use boot/login auto-start. Use a single-instance lock
-for both execution modes, a restart throttle, and no server-process fork per HTTP
-worker. A foreground session has no supervisor restart.
-
-The controller creates the RAM disk when first needed and verifies ownership,
-device identity, volume capacity and free space. A restarted server reuses the
-existing verified mount and DB; it must never reformat it. A normal stop leaves
-the RAM volume mounted so another session can reuse history. An explicit release
-command, logout/reboot that removes the volume, or power loss can erase it.
-Preservation lasts only while that RAM volume actually survives. A missing volume
-starts a new empty history epoch, visibly marked in the dashboard. New telemetry
-must not turn cumulative process counters into fabricated observations before
-that epoch; establish a baseline when starting a fresh history database.
-
-Flightrepo deployment registers producers but never starts BoboWatch.
-
-## Five-GiB storage policy
-
-Default quota: `5 * 1024**3 = 5,368,709,120` bytes. It is a total budget for the
-monitoring storage family, not five GiB for the main file plus unlimited WAL.
-The dedicated RAM volume is sized to the five-GiB allocation; actual filesystem
-capacity is slightly lower. Validate reported capacity/free bytes after formatting
-and derive effective admission limits after filesystem overhead and a reserve.
-The volume bounds stored data; SQLite caches, Python objects, queues and the
-server require additional, separately bounded memory.
-
-Initial watermarks against the nominal budget:
-
-- Start maintenance by approximately four GiB (80%), or earlier if the real
-  volume's free-space reserve requires it.
-- Prune toward approximately 3.5 GiB (70%).
-- Reserve the remaining capacity for WAL, checkpoints, bounded transactions,
-  filesystem overhead and maintenance. Reduce these thresholds if necessary;
-  never allocate five GiB of history alone.
-
-Measure main DB, WAL and SHM file sizes, free pages, live pages, spill files,
-filesystem free bytes and observed growth. Set a main-file page ceiling below
-the family quota. `PRAGMA max_page_count` only limits the main database file;
-it is not enforcement for the complete family. Likewise, `journal_size_limit`
-is not a hard cap on an actively growing WAL.
-
-Long readers can prevent WAL checkpoint completion. Keep existing query deadlines,
-provide reader gaps for checkpoints, and reject new ingestion with retryable 503
-if reserve cannot be protected. Dashboard/control access should remain usable.
-Never disable transaction consistency or silently discard a new snapshot while
-acknowledging it as stored. Bound transaction sizes, queue length and caches.
-
-### Circular history
-
-Implement a bounded SQL history buffer rather than a byte-level overwrite file:
-
-1. Run capacity checks at ingestion boundaries and periodic maintenance ticks.
-2. Delete the oldest accepted observations in small writer-owned transactions,
-   including their histogram, HTTP and route rows and expired events.
-3. Preserve configured identities, credentials/policy, the current producer
-   high-water marks and cumulative baselines needed for correct next deltas.
-4. Bound and retire obsolete run/deduplication state too; do not accumulate an
-   unbounded protected record per historical run. Specify a bounded retry/event
-   horizon and continue rejecting superseded runs after their history is evicted.
-5. Reuse freed pages. Use incremental reclamation and checkpoints when physical
-   file reduction is needed. Avoid full VACUUM at the capacity boundary.
-6. Display the oldest retained timestamp and eviction counts. Old records being
-   gone must not appear as zero traffic or a producer counter reset.
-
-Use server receipt order for capacity eviction; skewed producer clocks must not
-keep records indefinitely. Add the required deletion/indexing migration and
-configure incremental auto-vacuum before creating new DBs. Existing DB conversion
-needs explicit migration rather than editing already applied SQL migrations.
-
-## Local admin console
-
-Match Flightrepo's `storage status` and `storage quota` vocabulary. Proposed usage:
-
-```sh
-./deployment/bobowatch admin
-./deployment/bobowatch admin storage status
-./deployment/bobowatch admin storage quota 5GiB
-```
-
-```text
-watch> storage status
-watch> storage quota
-watch> storage quota 3GiB
-watch> registrations list
-watch> config reload
-watch> quit
-```
-
-The shell is a separate short-lived local client, not another daemon or an
-independent writer to the live database. Commands go through authenticated local
-control and the single server writer while running. When stopped, the CLI can
-validate/edit persistent policy and inventory; live DB status is unavailable if
-the RAM volume is absent. It must never create a database just to display status.
-
-Persist quota settings outside the volatile database so they survive reboot;
-the SQL copy is runtime state, not the only policy source. Report requested and
-applied settings if an asynchronous update is pending. Decreasing quota schedules
-bounded eviction and reports its effect. Never claim the lower physical ceiling
-is applied while allocated files exceed it. Raising a quota within the verified
-volume can be live; raising beyond it requires a stopped, explicit RAM-volume
-resize/replacement with a fresh memory/capacity check. No unlimited RAM mode.
-
-Status includes quota, main/WAL/SHM bytes, RAM-volume size/free bytes, reserved
-space, oldest/newest history, eviction count, checkpoint pressure and mount/epoch
-identity. Bound normal-disk diagnostic logs independently of the history quota.
-
-## Capacity experiment
-
-This Mac reports 48 GiB physical RAM. The ingestion RAM disk was reduced from seven to five GiB after the sizing
-experiment. Adding five GiB for BoboWatch would bring nominal RAM-disk capacity
-to ten GiB (about 21% of physical RAM), before all other app/cache memory. This is plausible
-for a pilot, not an unconditional memory reservation approval. Validate memory
-pressure at startup and show a useful error if allocation is unsafe.
-
-Two isolated current-schema databases were populated through the real SQL
-writer, each with 8,000 synthetic v2 snapshots and four replicas. The database,
-indexes and checkpointed WAL/SHM family measured approximately:
-
-| Registered routes per replica | Bytes per snapshot | Four replicas, 15-second sampling | Ten replicas, 15-second sampling |
-| --- | ---: | ---: | ---: |
-| 4 | 3,203 | 51 days | 20 days |
-| 20 | 5,837 | 28 days | 11 days |
-
-Retention projections use a 3.5-GiB history allowance, not the entire five GiB.
-They are extrapolations from synthetic data, not guaranteed retention periods;
-large event messages, future metrics, database fragmentation and live WAL pressure
-change them. Both test databases passed integrity and foreign-key checks. No
-five-GiB RAM volume or circular-retention implementation was tested or installed.
-See [measured results](research/ramdisk-capacity-2026-10-23.json).
-
-## Server architecture
+## Process architecture
 
 ```mermaid
 flowchart LR
-  F[Flightrepo adapter] -->|authenticated snapshots| H[Waitress HTTP API and bundled UI]
+  F[App ASGI adapter] -->|authenticated HTTP snapshots| H[Waitress API and bundled UI]
   B[Private browser] --> H
   H --> V[Authentication and protocol validation]
   V --> Q[Bounded writer queue]
-  A[Local admin CLI] --> C[Authenticated control]
-  C --> Q
-  T[Config reload and retention scheduler] --> Q
+  A[Local admin CLI] -->|loopback and admin token| H
+  T[Config reload and idle retention] --> Q
   Q --> W[One SQL writer thread]
-  W --> R[(SQLite on verified RAM disk)]
-  R --> D[Bounded read transactions]
+  W --> R[(SQLite on verified RAM volume)]
+  R --> D[Short dashboard read transactions]
   D --> H
-  P[Normal-disk config, registrations and tokens] --> T
+  P[Normal-disk config, registrations, quota and tokens] --> T
 ```
 
-One server process, currently four Waitress request threads, one bounded writer
-queue (currently 128 tasks) and one SQL writer thread. Dashboard reads use
-independent short transactions with a two-second deadline. Add only lightweight
-reload/retention scheduling and local control; no broker, ORM, separate collector,
-Grafana or external SQL server. Supervision and CLI are lifecycle/control layers,
-not additional always-on monitoring services. SQL backend-specific quota and
-reclamation logic stays inside the SQLite backend.
+One process, four Waitress request threads, one SQL writer thread and a 128-task
+writer queue. Reads use independent connections with a two-second query deadline.
+Waitress is the only third-party core dependency. There is no broker, ORM,
+collector suite or external SQL server. Backend-specific quotas/reclamation stay
+inside SQLiteStore and retention.py; a future SQL backend still needs a driver,
+implementation and tested migration.
 
-Before claiming readiness, test small quotas repeatedly through fill/evict/reuse,
-then a real five-GiB-volume boundary. Cover WAL growth with a blocked reader,
-ENOSPC rollback, reduced quota, bounded event/run state, crash recovery, missing
-mounts, stop/unload behavior and lost-volume reinitialization. RAM-disk-only
-history is an intentional tradeoff, not durable archival monitoring.
+Installed files live under `~/Library/Application Support/fyi.boboji.watch`,
+matching Flightrepo's `fyi.boboji.fly` convention. Configuration, registration,
+policy, tokens, source receipt and bounded logs use normal disk. Telemetry uses
+only an owner-private RAM volume with a root-derived name. The controller proves
+RAM image identity, owner, exact block count, mount, capacity and session marker
+before use. Missing or replaced mounts reject storage operations; there is no
+normal-disk fallback. Existing verified volumes are reused, never reformatted on
+restart. A device identity mismatch is an error, never permission to erase it.
 
-References: [SQLite WAL](https://sqlite.org/wal.html),
-[page limits](https://sqlite.org/pragma.html#pragma_max_page_count),
-[incremental vacuum](https://sqlite.org/pragma.html#pragma_incremental_vacuum).
+Explicit `start` bootstraps a runtime-local launchd definition with KeepAlive and
+restart throttling. `stop` unloads it. Definitions are never installed into
+LaunchAgents or boot/login locations. Foreground `serve` uses the same ownership
+lock but no restart supervisor. Installation starts nothing. Flightrepo deploy
+registers its producer without starting the monitor. Normal stop retains RAM
+history; release/reboot/power loss can erase it. No automatic history backup is
+created. RAM may still be swapped by the operating system.
+
+## Storage policy and circular history
+
+Default nominal capacity and requested quota are both **5,368,709,120 bytes**.
+The dedicated volume is the physical capacity boundary; the quota measures main
+DB, WAL and SHM together. SQLite temporary work stays in memory, with an eight-MiB
+connection cache. Python objects and the HTTP server need memory beyond the volume.
+New allocation checks physical-memory headroom and current memory pressure.
+
+Live-page retention begins at 60% of requested quota. Physical usage at 70%
+triggers checkpoints; admission reserves space and the main-file page ceiling is
+80%. This deliberately leaves room for WAL, filesystem overhead, checkpoints and
+bounded transactions rather than filling five GiB with history alone.
+
+The single writer periodically checks and reclaims space in bounded batches.
+Oldest server-received observations are deleted with their dependent HTTP,
+histogram, route and status rows; oldest events are evicted too. Freed pages are
+reused and incrementally reclaimed. Full VACUUM is never run at the boundary.
+Each replica keeps only its latest run's latest baseline protected from eviction;
+obsolete empty runs are removed. Retained events and the most recent 256 receipts
+per replica prevent event duplication within that bounded horizon. Superseded
+runs remain rejected through the latest-run state. Retry acknowledgements are
+returned only after commit.
+
+A long reader may prevent checkpoints. Capacity admission then rejects new
+observations with HTTP 503 rather than acknowledge unstored data. Query deadlines
+and short transactions allow later checkpoint progress. Main-file max_page_count
+is not a complete WAL quota; it is one guard alongside measured family bytes,
+transaction reserves and the physical volume boundary. Extremely small quotas
+may be below the protected inventory/baseline minimum and stop new ingestion.
+
+Quota policy is persistent outside RAM and reloaded live. A requested decrease
+can be pending while physical files shrink; status reports `quota_applied=false`
+until the family fits. Raising quota within allocated capacity is live. Replacing
+capacity requires a stopped, explicit release and new allocation, losing history.
+There is no unlimited RAM mode.
+
+The database stores an epoch UUID and eviction totals. The dashboard shows epoch,
+usage, oldest retained observation and evicted snapshot count. A new database
+establishes a zero-delta first snapshot for each producer run, preventing old
+cumulative counters from fabricating pre-epoch observations. Surviving history
+continues normal deltas after server restarts.
+
+## Validation
+
+The unit/server suite includes small-quota repeated fill/evict/reuse, a held
+reader blocking checkpoints, a live reduced quota, baseline preservation,
+bounded event receipts, migration from v1, integrity/foreign-key checks,
+authorization and installer/lifecycle failure paths.
+
+A separate actual macOS five-GiB-volume probe installed an isolated foreground
+runtime, registered a synthetic producer, changed quota live, restarted and
+reinstalled while preserving epoch, filled SQLite to its main-file page ceiling,
+verified retryable admission rejection and rolled-back-full-transaction integrity,
+then released the volume and verified a fresh epoch. All test resources were
+removed. It did not load a user launchd job or touch Flightrepo's live ingestion.
+
+[Measured runtime results](research/ramdisk-runtime-validation-2026-10-23.json):
+exact five-GiB volume; 4,295,032,832-byte family at the boundary; 1,052,524,544 bytes
+free; integrity and foreign keys valid. Synthetic ballast exercised the physical
+page ceiling/rollback; the small-quota tests exercised telemetry eviction and reuse.
+This is not a claim of a multi-day production soak test.
+
+Earlier [synthetic row sizing](research/ramdisk-capacity-2026-10-23.json) measured
+roughly 3.2–5.8 KiB per v2 snapshot for four to twenty routes. A conservative
+three-GiB live-history target projects roughly 24–44 days for four replicas
+sampled every 15 seconds, or 10–17 days for ten. Events, fragmentation, future
+metrics and WAL pressure change retention; these are estimates, not promises.
+
+On this 48-GiB Mac, Flight ingestion and BoboWatch nominal RAM capacities total
+ten GiB. Startup rejects unsafe headroom rather than silently shrinking the
+requested volume. Host metrics, public probes, ingestion/freshness hooks and
+alerts remain future work; the current runtime is a local HTTP-monitoring pilot.
