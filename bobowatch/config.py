@@ -1,6 +1,8 @@
 """Operator-owned inventory and private runtime initialization."""
 
+import copy
 import hashlib
+import json
 import math
 import re
 import secrets
@@ -32,12 +34,22 @@ class Config:
     allowed_hosts: tuple[str, ...] = ()
 
 
-def load(path):
+def load(path, *, registry=None):
     path = Path(path).expanduser().resolve()
     with path.open("rb") as file:
         data = tomllib.load(file)
     if set(data) - {"monitor", "projects", "sites", "hosts", "replicas"}:
         raise Invalid("Unknown configuration section")
+    registry_path = path.parent / "registrations.json"
+    if registry is None:
+        registry = json.loads(registry_path.read_text()) if registry_path.exists() else {}
+    if not isinstance(registry, dict) or set(registry) - {"projects", "sites", "hosts", "replicas"}:
+        raise Invalid("Invalid registration inventory")
+    registry = copy.deepcopy(registry)
+    for group, entries in registry.items():
+        if not isinstance(entries, list):
+            raise Invalid("Registration inventory must contain lists")
+        data[group] = data.get(group, []) + entries
     monitor = data.get("monitor", {})
     if set(monitor) - {
         "listen",
@@ -93,6 +105,8 @@ def load(path):
             raise Invalid(f"{group}: expected at most 100 entries")
         ids = set()
         for entry in entries:
+            if not isinstance(entry, dict):
+                raise Invalid("Inventory entries must be objects")
             if set(entry) - keys:
                 raise Invalid(f"Unknown {group} setting")
             key = identifier(entry.get("id"))

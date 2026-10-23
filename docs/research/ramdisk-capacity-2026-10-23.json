@@ -1,0 +1,61 @@
+{
+  "date": "2026-10-23",
+  "status": "Sizing experiment against the current v0.2 schema; not a full-quota or retention test",
+  "host_physical_ram_bytes": 51539607552,
+  "observed_existing_ramdisk_bytes": 7516192768,
+  "proposed_total_ramdisk_budget_bytes": 5368709120,
+  "history_budget_used_for_projection_bytes": 3758096384,
+  "method": "Two isolated temporary SQLite databases, each with 8,000 validated protocol-v2 snapshots across four replicas; all configured routes active, HTTP body sizes and periodic short events; actual SQLiteStore ingestion with WAL; checkpointed before measuring the DB/WAL/SHM family; integrity and foreign-key checks passed. No live runtime was modified.",
+  "limitations": [
+    "Synthetic schema sizing only; not a throughput benchmark.",
+    "Retention projections exclude extra storage for future host metrics, rollups and retention bookkeeping.",
+    "No 5 GiB volume was allocated, and circular retention is not implemented.",
+    "Actual filesystem space, memory pressure, WAL peaks and query performance require runtime validation."
+  ],
+  "cases": [
+    {
+      "routes": 4,
+      "snapshots": 8000,
+      "replicas": 4,
+      "sample_seconds": 15,
+      "files_bytes": {
+        "monitor.sqlite3": 25591808,
+        "monitor.sqlite3-wal": 0,
+        "monitor.sqlite3-shm": 32768
+      },
+      "bytes_per_snapshot_including_indexes": 3203.1,
+      "database_pages": 6248,
+      "free_pages": 0,
+      "page_size": 4096,
+      "elapsed_seconds": 1.53,
+      "estimated_days_in_3_5_GiB": {
+        "1": 203.7,
+        "4": 50.9,
+        "10": 20.4,
+        "20": 10.2
+      }
+    },
+    {
+      "routes": 20,
+      "snapshots": 8000,
+      "replicas": 4,
+      "sample_seconds": 15,
+      "files_bytes": {
+        "monitor.sqlite3": 46661632,
+        "monitor.sqlite3-wal": 0,
+        "monitor.sqlite3-shm": 32768
+      },
+      "bytes_per_snapshot_including_indexes": 5836.8,
+      "database_pages": 11392,
+      "free_pages": 0,
+      "page_size": 4096,
+      "elapsed_seconds": 2.55,
+      "estimated_days_in_3_5_GiB": {
+        "1": 111.8,
+        "4": 27.9,
+        "10": 11.2,
+        "20": 5.6
+      }
+    }
+  ]
+}

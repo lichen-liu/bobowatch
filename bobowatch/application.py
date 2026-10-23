@@ -7,7 +7,7 @@ import sqlite3
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from .config import token_hash
+from .config import load, token_hash
 from .network import allowed_authority, local_ipv4
 from .protocol import MAX_BODY, Conflict, Invalid, validate
 from .storage import Busy
@@ -26,10 +26,30 @@ class Application:
         self.config, self.store = config, store
         self.admin_hash = token_hash(config.admin_token_file.read_text().strip())
         self.tokens = {r["id"]: r["token_hash"] for r in config.replicas if not r.get("retired")}
+        self._state = (self.config, self.admin_hash, self.tokens)
         self.assets = {
             url: ((Path(__file__).parent / "web" / name).read_bytes(), mime)
             for url, (name, mime) in ASSETS.items()
         }
+
+    def reload(self):
+        config = load(self.config.path)
+        if config == self.config:
+            return False
+        if (config.path, config.database, config.host, config.port, config.demo) != (
+            self.config.path,
+            self.config.database,
+            self.config.host,
+            self.config.port,
+            self.config.demo,
+        ):
+            raise Invalid("Listener, storage and demo-mode changes require a restart")
+        admin_hash = token_hash(config.admin_token_file.read_text().strip())
+        tokens = {r["id"]: r["token_hash"] for r in config.replicas if not r.get("retired")}
+        self.store.reload_inventory(config)
+        self.config, self.admin_hash, self.tokens = config, admin_hash, tokens
+        self._state = (config, admin_hash, tokens)
+        return True
 
     def __call__(self, environ, start_response):
         status, body, mime = 500, {"error": "Internal service error"}, "application/json"
@@ -77,11 +97,12 @@ class Application:
         return [body]
 
     def dispatch(self, env):
+        config, admin_hash, tokens = self._state
         method, path = env["REQUEST_METHOD"], env.get("PATH_INFO", "/")
         host = env.get("HTTP_HOST", "")
         if not local_ipv4(env.get("REMOTE_ADDR", "")):
             return 403, {"error": "Access is limited to local-network clients"}, "application/json"
-        if not allowed_authority(host, self.config):
+        if not allowed_authority(host, config):
             return 403, {"error": "Unrecognized Host header"}, "application/json"
         origin = env.get("HTTP_ORIGIN")
         if origin:
@@ -103,7 +124,7 @@ class Application:
         if path == "/api/overview":
             if method != "GET":
                 return 405, {"error": "Use GET"}, "application/json"
-            if not hmac.compare_digest(digest, self.admin_hash):
+            if not hmac.compare_digest(digest, admin_hash):
                 return 401, {"error": "Admin token required"}, "application/json"
             raw_query = env.get("QUERY_STRING", "")
             if len(raw_query) > 2048:
@@ -128,7 +149,7 @@ class Application:
         if method != "POST":
             return 405, {"error": "Use POST"}, "application/json"
         replica = next(
-            (key for key, value in self.tokens.items() if hmac.compare_digest(digest, value)), None
+            (key for key, value in tokens.items() if hmac.compare_digest(digest, value)), None
         )
         if replica is None:
             return 401, {"error": "Producer token required"}, "application/json"

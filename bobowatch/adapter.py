@@ -12,12 +12,24 @@ from collections import deque
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.error import HTTPError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 from .protocol import BUCKETS_US, identifier
 
 log = logging.getLogger(__name__)
+
+
+def destination(endpoint, token_file):
+    url = urlsplit(endpoint)
+    if url.scheme not in ("http", "https") or not url.hostname or url.username or url.password:
+        raise ValueError("Expected an HTTP(S) ingestion URL without credentials")
+    if url.scheme == "http" and url.hostname not in ("127.0.0.1", "localhost", "::1"):
+        raise ValueError("Plain HTTP is only allowed on loopback")
+    if url.port is not None and not 1 <= url.port <= 65535:
+        raise ValueError("Invalid ingestion port")
+    return endpoint, Path(token_file)
 
 
 class _NoRedirect(HTTPRedirectHandler):
@@ -28,6 +40,7 @@ class _NoRedirect(HTTPRedirectHandler):
 @dataclass
 class Response:
     status: int = 200
+    route: str | None = None
     bytes_sent: int | None = None
     bytes_received: int | None = None
 
@@ -43,16 +56,11 @@ class Monitor:
         self, *, replica, endpoint, token_file, revision="unknown", interval=15, routes=()
     ):
         self.replica = identifier(replica)
-        url = urlsplit(endpoint)
-        if url.scheme not in ("http", "https") or url.username or url.password:
-            raise ValueError("Expected an HTTP(S) ingestion URL without credentials")
-        if url.scheme == "http" and url.hostname not in ("127.0.0.1", "localhost", "::1"):
-            raise ValueError("Plain HTTP is only allowed on loopback")
         if not isinstance(revision, str) or len(revision) > 128:
             raise ValueError("revision must be text of at most 128 characters")
         if not math.isfinite(interval) or interval < 0.1:
             raise ValueError("interval must be at least 0.1 seconds")
-        self.endpoint, self.token_file = endpoint, Path(token_file)
+        self.endpoint, self.token_file = destination(endpoint, token_file)
         self.revision, self.interval = revision, interval
         self._lock, self._delivery_lock = threading.Lock(), threading.Lock()
         self._stop, self._thread = threading.Event(), None
@@ -131,7 +139,7 @@ class Monitor:
                 self.record_request(
                     time.monotonic() - started,
                     response.status,
-                    route=route,
+                    route=response.route or route,
                     bytes_sent=response.bytes_sent,
                     bytes_received=response.bytes_received,
                 )
@@ -182,6 +190,11 @@ class Monitor:
                 },
             }
 
+    def set_destination(self, endpoint, token_file):
+        target = destination(endpoint, token_file)
+        with self._delivery_lock:
+            self.endpoint, self.token_file = target
+
     def flush(self):
         """Explicit sender operation. Never invoked by record_request/event."""
         with self._delivery_lock:
@@ -209,6 +222,8 @@ class Monitor:
                 self.last_error = None
                 return True
             except (OSError, ValueError) as exc:
+                if isinstance(exc, HTTPError):
+                    exc.close()
                 # Export no token, request body or URL into diagnostics.
                 if self.last_error is None:
                     log.warning(
