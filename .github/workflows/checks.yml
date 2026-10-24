@@ -43,3 +43,6 @@ jobs:
         run: ruff format --check bobowatch tests examples installation deployment
       - name: Test
         run: python -Werror::ResourceWarning -m unittest discover -s tests -v
+
+      - name: Calendar range and daylight-saving tests
+        run: node --test tests/test_calendar_ranges.cjs

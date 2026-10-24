@@ -149,7 +149,7 @@ class AccessTests(unittest.TestCase):
     def test_short_overview_windows_and_five_minute_default(self):
         self.local()
         self.assertEqual(self.call("/api/overview")[1]["window_seconds"], 300)
-        for window in (30, 60, 300, 900, 1800, 3600, 21600, 86400):
+        for window in (30, 60, 300, 900, 1800, 3600, 21600, 43200, 86400, 604800, 2592000, 7776000):
             with self.subTest(window=window):
                 code, data = self.call("/api/overview", QUERY_STRING=f"window={window}")
                 self.assertEqual(code, 200)
@@ -161,3 +161,27 @@ class AccessTests(unittest.TestCase):
                 self.assertEqual(
                     self.call("/api/overview", QUERY_STRING=f"window={window}")[0], 400
                 )
+
+    def test_custom_overview_ranges_and_invalid_queries(self):
+        import time
+
+        self.local()
+        end = int(time.time() * 1000) - 1000
+        start = end - 60000
+        code, data = self.call(
+            "/api/overview", QUERY_STRING=f"start_ms={start}&end_ms={end}&project=travel"
+        )
+        self.assertEqual(code, 200)
+        self.assertEqual((data["range_start_ms"], data["range_end_ms"]), (start, end))
+        self.assertTrue(data["historical"])
+        self.assertIsNone(data["current"]["rps"])
+        for query in (
+            f"start_ms={start}",
+            f"end_ms={end}",
+            f"start_ms={start}&end_ms={end}&window=300",
+            f"start_ms={start}&start_ms={start}&end_ms={end}",
+            f"start_ms={end}&end_ms={start}",
+            f"start_ms=0&end_ms={end + 120000}",
+        ):
+            with self.subTest(query=query):
+                self.assertEqual(self.call("/api/overview", QUERY_STRING=query)[0], 400)
