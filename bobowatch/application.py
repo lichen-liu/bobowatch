@@ -12,6 +12,7 @@ from .access import read_access
 from .config import load, token_hash
 from .network import allowed_authority, local_ipv4
 from .protocol import MAX_BODY, Conflict, Invalid, validate
+from .ranges import overview_range
 from .storage import Busy
 
 log = logging.getLogger(__name__)
@@ -19,6 +20,7 @@ ASSETS = {
     "/favicon.svg": ("favicon.svg", "image/svg+xml"),
     "/": ("index.html", "text/html; charset=utf-8"),
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+    "/ranges.js": ("ranges.js", "text/javascript; charset=utf-8"),
     "/style.css": ("style.css", "text/css; charset=utf-8"),
 }
 
@@ -169,19 +171,23 @@ class Application:
                 query = parse_qs(raw_query, keep_blank_values=True, max_num_fields=10)
             except ValueError:
                 raise Invalid("Too many query fields") from None
-            if set(query) - {"project", "site", "host", "replica", "window"} or any(
-                len(v) != 1 for v in query.values()
-            ):
+            if set(query) - {
+                "project",
+                "site",
+                "host",
+                "replica",
+                "window",
+                "start_ms",
+                "end_ms",
+            } or any(len(v) != 1 for v in query.values()):
                 raise Invalid("Invalid filter parameters")
-            window = query.get("window", ["300"])[0]
-            if window not in ("30", "60", "300", "900", "1800", "3600", "21600", "86400"):
-                raise Invalid("Unsupported time window")
+            selected_range = overview_range(query)
             filters = {
                 key + "_id" if key != "replica" else "id": query[key][0]
                 for key in ("project", "site", "host", "replica")
                 if query.get(key, [""])[0]
             }
-            data = self.store.overview(filters, int(window))
+            data = self.store.overview(filters, **selected_range)
             data["storage"] = self.store.storage_status()
             data["dashboard_access"] = access
             return 200, data, "application/json"

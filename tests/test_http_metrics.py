@@ -155,6 +155,55 @@ class HTTPMetricsTests(unittest.TestCase):
                     )
                 )
 
+    def test_absolute_range_has_exclusive_end_and_does_not_expose_live_gauges(self):
+        self.monitor.started_at_ms = self.now - 90000
+        for age, count in ((60, 1), (30, 3), (0, 5)):
+            for _ in range(count):
+                self.monitor.record_request(0.1, route="/api/search")
+            payload = self.snapshot((90 - age) * 1000)
+            payload["observed_at_ms"] = self.now - age * 1000
+            payload["events"] = [
+                {
+                    "id": f"event-{age}",
+                    "at_ms": payload["observed_at_ms"],
+                    "severity": "info",
+                    "message": f"at {age}",
+                }
+            ]
+            self.store._submit(
+                lambda conn, payload=payload: self.store._ingest(
+                    conn, payload, payload["replica"], demo_received_at_ms=payload["observed_at_ms"]
+                )
+            )
+        for start_age, end_age, count in ((60, 30, 1), (30, 0, 3)):
+            data = self.store.overview(
+                {"id": "flights-r01"},
+                now_ms=self.now,
+                start_ms=self.now - start_age * 1000,
+                end_ms=self.now - end_age * 1000,
+            )
+            self.assertEqual(data["http"]["requests"], count)
+            self.assertEqual(sum(point["requests"] for point in data["charts"]), count)
+            self.assertEqual([event["id"] for event in data["events"]], [f"event-{start_age}"])
+            self.assertEqual(data["window_seconds"], 30)
+            self.assertEqual(data["range_start_ms"], self.now - start_age * 1000)
+            self.assertEqual(data["range_end_ms"], self.now - end_age * 1000)
+            self.assertTrue(data["historical"])
+            self.assertEqual(
+                data["sites"][0]["replicas"][0]["range_observed_at_ms"], self.now - start_age * 1000
+            )
+            for item in [
+                data,
+                *data["sites"],
+                *(r for site in data["sites"] for r in site["replicas"]),
+            ]:
+                self.assertTrue(all(value is None for value in item["current"].values()))
+        empty = self.store.overview(
+            {}, now_ms=self.now, start_ms=self.now - 120000, end_ms=self.now - 90000
+        )
+        self.assertEqual(empty["http"]["requests"], 0)
+        self.assertEqual(empty["charts"], [])
+
     def test_v1_database_upgrade_preserves_history_and_makes_backup(self):
         self.monitor.record_request(0.1)
         p = self.snapshot(1000)
