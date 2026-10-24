@@ -216,3 +216,24 @@ database URL fails at startup rather than silently choosing SQLite.
 - [Original illustrative schema](docs/schema.sql)
 - [Initial migration](bobowatch/migrations/001.sql) and [HTTP extension](bobowatch/migrations/002.sql)
 - [Original proposal and dashboard study](https://github.com/lichen-liu/flightrepo/pull/25)
+
+### Flask and other WSGI applications
+
+`bobowatch.wsgi.InstrumentedApp(app, factory)` wraps a WSGI callable using only
+Python's standard library. Construct it after fork; call `start()` before serving
+(or let the first request start it), and `close()` when serving stops. The factory
+returns a `Monitor` or `ConfiguredMonitor`. Startup is safe across server threads;
+monitoring startup/delivery failure leaves the application serving.
+
+The framework may set `environ["bobowatch.route"]` to its resolved route template.
+Register those templates on the monitor; unknown values collapse to `unmatched`.
+Never put raw URLs, query strings or business data in route labels. For Flask, an
+`after_request` hook can publish `request.url_rule.rule` when a rule exists.
+
+Streaming responses remain streamed. The wrapper tracks request count, status
+classes, errors, latency, active requests and body bytes without reading extra
+request data. Sizes remain unknown for unread bodies or interrupted responses.
+These are application body bytes, not network/header bandwidth. Waitress or a
+reverse proxy can reject a connection before WSGI dispatch; those rejections and
+connection counts require separate server instrumentation. No server dependency
+is added by the adapter, and no BoboWatch database is opened by the producer.
