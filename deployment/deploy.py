@@ -10,8 +10,10 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 from bobowatch import admin, manage  # noqa: E402
+from bobowatch.config import load  # noqa: E402
 from bobowatch.paths import runtime_root  # noqa: E402
 from bobowatch.policy import size_bytes  # noqa: E402
+from bobowatch.urls import print_dashboard  # noqa: E402
 
 
 def deploy(root, *, ram_bytes=None, port=None):
@@ -48,8 +50,10 @@ def main(argv=None):
         parser.error("RAM size must be a whole multiple of 512 bytes")
     os.umask(0o077)
     try:
-        result = deploy(runtime_root(args.runtime_dir), ram_bytes=args.ram_size, port=args.port)
+        root = runtime_root(args.runtime_dir)
+        result = deploy(root, ram_bytes=args.ram_size, port=args.port)
         print("BoboWatch deployed and checked; history epoch: " + result["epoch"])
+        print_dashboard(load(root / "monitor.toml"))
     except (OSError, ValueError, RuntimeError, KeyError, subprocess.SubprocessError) as error:
         parser.exit(1, "Deployment failed: " + str(error) + "\n")
 

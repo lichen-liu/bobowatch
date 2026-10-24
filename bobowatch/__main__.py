@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .config import initialize, load
 from .protocol import Invalid
+from .urls import print_dashboard
 
 DEFAULT_STATE = Path.home() / ".local/state/bobowatch"
 
@@ -107,14 +108,7 @@ def serve(config, *, simulate=False):
 
             for sig in (signal.SIGTERM, signal.SIGINT):
                 previous_handlers[sig] = signal.signal(sig, shutdown)
-            print(f"BoboWatch: http://127.0.0.1:{config.port}", flush=True)
-            if config.host == "0.0.0.0":
-                print(
-                    f"LAN access: all IPv4 interfaces on port {config.port}; use this computer's LAN IP",
-                    flush=True,
-                )
-                for hostname in config.allowed_hosts:
-                    print(f"LAN hostname: http://{hostname}:{config.port}", flush=True)
+            print_dashboard(config)
             print(f"Admin token file: {config.admin_token_file}", flush=True)
             print(f"SQLite history: {config.database}", flush=True)
             if simulate:

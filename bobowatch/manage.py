@@ -18,6 +18,7 @@ from .config import load
 from .paths import runtime_root
 from .protocol import Invalid
 from .provision import private_write, require_private
+from .urls import dashboard_urls
 
 
 def label(root):
@@ -211,6 +212,8 @@ def main(argv=None):
                 return
             with control_lock(root):
                 result = admin.execute(root, words, running=busy(root))
+        if args.command in ("start", "status", "check") and (root / "monitor.toml").exists():
+            result = {**result, "dashboard": dashboard_urls(load(root / "monitor.toml"))}
         print(json.dumps(result, indent=2))
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
         logging.getLogger(__name__).error("%s", error)
