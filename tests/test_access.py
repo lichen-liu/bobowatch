@@ -155,6 +155,7 @@ class AccessTests(unittest.TestCase):
                 self.assertEqual(code, 200)
                 self.assertEqual(data["window_seconds"], window)
                 self.assertGreaterEqual(data["bucket_seconds"], 5)
+                self.assertEqual(data["sample_seconds"], self.config.sample_seconds)
         for window in ("0", "-1", "1", "120", "NaN"):
             with self.subTest(window=window):
                 self.assertEqual(

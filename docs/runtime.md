@@ -92,7 +92,8 @@ Manual refresh and filter changes fetch immediately. Hidden tabs pause automatic
 updates and refresh once when visible again, unless auto-refresh is off. Requests
 never overlap, and a failed update retains the previous data with a warning and
 retries at the selected interval. Short-window chart labels show seconds; producer
-sampling still determines the number of observations available.
+sampling still determines the number of observations available. Charts use the
+configured sampling cadence to identify gaps and show isolated observations as dots.
 
 The dashboard is empty until a real app is registered and sends snapshots.
 Installed operation never seeds fictional data. Legacy `python -m bobowatch demo`

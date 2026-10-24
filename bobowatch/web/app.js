@@ -228,26 +228,40 @@ function lineChart(id, title, series, format) {
         start + ((end - start) * i) / 4,
       ),
     );
+  const gapMs = Math.max(state.data.bucket_seconds, state.data.sample_seconds) * 1800;
   shown.forEach((line, index) => {
     let d = "",
       active = false,
-      previous = null;
+      previous = null,
+      isolated = null;
+    const markIsolated = () => {
+      if (isolated)
+        shape(svg, "circle", {
+          cx: x(isolated.at_ms),
+          cy: y(line.get(isolated)),
+          r: 2,
+          fill: line.color,
+        });
+      isolated = null;
+    };
     for (const point of line.points || points) {
       const value = line.get(point);
       if (point.partial || value === null || !Number.isFinite(value)) {
+        markIsolated();
         active = false;
         previous = null;
         continue;
       }
-      if (
-        previous !== null &&
-        point.at_ms - previous > state.data.bucket_seconds * 1800
-      )
+      if (previous !== null && point.at_ms - previous > gapMs) {
+        markIsolated();
         active = false;
+      }
+      isolated = active ? null : point;
       d += `${active ? "L" : "M"}${x(point.at_ms).toFixed(2)},${y(value).toFixed(2)} `;
       active = true;
       previous = point.at_ms;
     }
+    markIsolated();
     shape(svg, "path", {
       d,
       fill: "none",

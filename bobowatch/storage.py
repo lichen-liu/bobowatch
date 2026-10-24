@@ -619,6 +619,7 @@ class SQLiteStore:
                     "charts": combined,
                     "current": current,
                     "bucket_seconds": step / 1000,
+                    "sample_seconds": self.config.sample_seconds,
                     "schema_version": 3,
                     "now_ms": now,
                     "window_seconds": window,
