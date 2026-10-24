@@ -127,6 +127,34 @@ class HTTPMetricsTests(unittest.TestCase):
         self.assertAlmostEqual(data["charts"][-1]["rps"], 20)
         self.assertIsNone(data["charts"][-1]["bytes_sent_per_sec"])
 
+    def test_short_windows_select_recent_intervals_and_preserve_totals(self):
+        self.monitor.started_at_ms = self.now - 90_000
+        for age_seconds, count in ((75, 1), (45, 3), (15, 5)):
+            for _ in range(count):
+                self.monitor.record_request(0.1, route="/api/search")
+            payload = self.snapshot((90 - age_seconds) * 1000)
+            payload["observed_at_ms"] = self.now - age_seconds * 1000
+            self.store._submit(
+                lambda conn, payload=payload: self.store._ingest(
+                    conn,
+                    payload,
+                    payload["replica"],
+                    demo_received_at_ms=payload["observed_at_ms"],
+                )
+            )
+        for window, expected in ((30, 5), (60, 8), (300, 9)):
+            with self.subTest(window=window):
+                data = self.store.overview({"id": "flights-r01"}, window, now_ms=self.now)
+                self.assertEqual(data["http"]["requests"], expected)
+                self.assertEqual(sum(point["requests"] for point in data["charts"]), expected)
+                self.assertEqual(data["bucket_seconds"], 5)
+                self.assertTrue(
+                    all(
+                        self.now - window * 1000 <= point["at_ms"] <= self.now
+                        for point in data["charts"]
+                    )
+                )
+
     def test_v1_database_upgrade_preserves_history_and_makes_backup(self):
         self.monitor.record_request(0.1)
         p = self.snapshot(1000)

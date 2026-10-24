@@ -10,9 +10,51 @@ const state = {
   error: "",
   session: 0,
   controller: null,
+  refreshSeconds: 300,
   hiddenSeries: new Map(),
 };
 let timer;
+const preferenceKey = "bobowatch.dashboard.preferences.v1";
+const timeWindows = new Set([
+  "30", "60", "300", "900", "1800", "3600", "21600", "86400",
+]);
+const refreshIntervals = new Set(["0", "30", "60", "300"]);
+function restorePreferences() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(preferenceKey));
+    if (saved && timeWindows.has(saved.window)) $("window").value = saved.window;
+    if (saved && refreshIntervals.has(saved.refresh))
+      $("auto-refresh").value = saved.refresh;
+  } catch {
+    // Storage may be unavailable or contain invalid data. Keep the defaults.
+  }
+  state.refreshSeconds = Number($("auto-refresh").value);
+}
+function savePreferences() {
+  try {
+    localStorage.setItem(
+      preferenceKey,
+      JSON.stringify({
+        window: $("window").value,
+        refresh: $("auto-refresh").value,
+      }),
+    );
+  } catch {
+    // The dashboard still works when browser storage is unavailable.
+  }
+}
+function scheduleRefresh() {
+  clearTimeout(timer);
+  timer = null;
+  if (
+    state.busy || document.hidden || !state.refreshSeconds ||
+    (!state.token && !state.localAccess)
+  ) return;
+  timer = setTimeout(() => {
+    timer = null;
+    refresh();
+  }, state.refreshSeconds * 1000);
+}
 const colors = {
   teal: "#178b7b",
   blue: "#5286de",
@@ -182,28 +224,44 @@ function lineChart(id, title, series, format) {
         fill: "#a0adb6",
         "font-size": 8,
       },
-      clock(start + ((end - start) * i) / 4),
+      (state.data.window_seconds <= 300 ? detailClock : clock)(
+        start + ((end - start) * i) / 4,
+      ),
     );
+  const gapMs = Math.max(state.data.bucket_seconds, state.data.sample_seconds) * 1800;
   shown.forEach((line, index) => {
     let d = "",
       active = false,
-      previous = null;
+      previous = null,
+      isolated = null;
+    const markIsolated = () => {
+      if (isolated)
+        shape(svg, "circle", {
+          cx: x(isolated.at_ms),
+          cy: y(line.get(isolated)),
+          r: 2,
+          fill: line.color,
+        });
+      isolated = null;
+    };
     for (const point of line.points || points) {
       const value = line.get(point);
       if (point.partial || value === null || !Number.isFinite(value)) {
+        markIsolated();
         active = false;
         previous = null;
         continue;
       }
-      if (
-        previous !== null &&
-        point.at_ms - previous > state.data.bucket_seconds * 1800
-      )
+      if (previous !== null && point.at_ms - previous > gapMs) {
+        markIsolated();
         active = false;
+      }
+      isolated = active ? null : point;
       d += `${active ? "L" : "M"}${x(point.at_ms).toFixed(2)},${y(value).toFixed(2)} `;
       active = true;
       previous = point.at_ms;
     }
+    markIsolated();
     shape(svg, "path", {
       d,
       fill: "none",
@@ -671,7 +729,7 @@ function render() {
       { id: "connection" },
     ),
   );
-  $("updated").textContent = `Updated ${clock(data.now_ms)}`;
+  $("updated").textContent = `Updated ${detailClock(data.now_ms)}`;
   $("clear").hidden = !state.replica;
   $("scope-meta").replaceChildren(
     el("div", `${data.sites.length} sites · ${replicas.length} replicas`),
@@ -852,6 +910,7 @@ function render() {
 }
 async function refresh() {
   if (!state.token && !state.localAccess) return false;
+  clearTimeout(timer);
   if (state.busy) {
     state.pending = true;
     return false;
@@ -871,11 +930,12 @@ async function refresh() {
       headers: state.token ? { Authorization: "Bearer " + state.token } : {},
       signal: controller.signal,
     });
+    if (session !== state.session) return false;
     if (response.status === 401) {
       state.token = "";
       state.localAccess = false;
       state.data = null;
-      clearInterval(timer);
+      clearTimeout(timer);
       showLogin();
     }
     if (!response.ok)
@@ -920,7 +980,7 @@ async function refresh() {
     if (state.pending && (state.token || state.localAccess)) {
       state.pending = false;
       queueMicrotask(refresh);
-    }
+    } else scheduleRefresh();
   }
 }
 function showLogin() {
@@ -947,7 +1007,6 @@ async function connect() {
     state.localAccess = access.dashboard_access === "local";
     showLogin();
     if (state.localAccess) {
-      timer = setInterval(refresh, 3000);
       await refresh();
     } else $("connection").textContent = "Private dashboard";
   } catch (error) {
@@ -971,10 +1030,10 @@ $("login-form").addEventListener("submit", async (event) => {
   const button = $("login-form").querySelector("button");
   button.disabled = true;
   try {
-    if (await refresh()) {
-      clearInterval(timer);
-      timer = setInterval(refresh, 3000);
-    } else if (!state.data) state.token = "";
+    if (!(await refresh()) && !state.data) {
+      state.token = "";
+      scheduleRefresh();
+    }
   } finally {
     button.disabled = false;
   }
@@ -986,7 +1045,8 @@ $("logout").addEventListener("click", () => {
   state.data = null;
   state.replica = "";
   state.error = "";
-  clearInterval(timer);
+  state.pending = false;
+  clearTimeout(timer);
   showLogin();
   $("login-error").textContent = "";
   $("token").focus();
@@ -997,8 +1057,19 @@ for (const id of ["project", "site", "host", "window"])
   $(id).addEventListener("change", () => {
     state.replica = "";
     if (id === "project") $("site").value = "";
+    if (id === "window") savePreferences();
     refresh();
   });
+$("auto-refresh").addEventListener("change", () => {
+  state.refreshSeconds = Number($("auto-refresh").value);
+  savePreferences();
+  scheduleRefresh();
+});
+document.addEventListener("visibilitychange", () => {
+  clearTimeout(timer);
+  if (!document.hidden && state.refreshSeconds && (state.token || state.localAccess))
+    refresh();
+});
 $("refresh").addEventListener("click", refresh);
 $("clear").addEventListener("click", () => {
   state.replica = "";
@@ -1011,4 +1082,5 @@ $("sites").addEventListener("click", (event) => {
     refresh();
   }
 });
+restorePreferences();
 connect();
