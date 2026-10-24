@@ -173,8 +173,8 @@ class Application:
                 len(v) != 1 for v in query.values()
             ):
                 raise Invalid("Invalid filter parameters")
-            window = query.get("window", ["3600"])[0]
-            if window not in ("900", "1800", "3600", "21600", "86400"):
+            window = query.get("window", ["300"])[0]
+            if window not in ("30", "60", "300", "900", "1800", "3600", "21600", "86400"):
                 raise Invalid("Unsupported time window")
             filters = {
                 key + "_id" if key != "replica" else "id": query[key][0]

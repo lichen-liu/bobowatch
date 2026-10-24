@@ -145,3 +145,18 @@ class AccessTests(unittest.TestCase):
                 set_access(self.root, mode)
         self.assertEqual(read_access(self.root), "local")
         self.assertEqual(self.call("/api/access", method="POST")[0], 405)
+
+    def test_short_overview_windows_and_five_minute_default(self):
+        self.local()
+        self.assertEqual(self.call("/api/overview")[1]["window_seconds"], 300)
+        for window in (30, 60, 300, 900, 1800, 3600, 21600, 86400):
+            with self.subTest(window=window):
+                code, data = self.call("/api/overview", QUERY_STRING=f"window={window}")
+                self.assertEqual(code, 200)
+                self.assertEqual(data["window_seconds"], window)
+                self.assertGreaterEqual(data["bucket_seconds"], 5)
+        for window in ("0", "-1", "1", "120", "NaN"):
+            with self.subTest(window=window):
+                self.assertEqual(
+                    self.call("/api/overview", QUERY_STRING=f"window={window}")[0], 400
+                )
