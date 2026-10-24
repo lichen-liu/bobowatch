@@ -38,6 +38,12 @@ foreground process; it tells you to use its terminal.
 
 ## Open the dashboard
 
+Successful `deploy` prints a **Dashboard (this Mac)** link and detected
+**Dashboard (local network, interface)** links, using the configured port.
+`start`, `check` and `status` include the same links in their JSON `dashboard`
+field; foreground `serve` prints them before serving. For a stopped runtime,
+`status` still shows the configured URLs alongside `running: false`.
+
 Open `http://127.0.0.1:8720` on the serving Mac. Installed runtimes open the
 read-only dashboard directly, without a token or login, for local-network clients.
 The first installation/update creates a private `dashboard-policy.json` selecting
@@ -66,6 +72,11 @@ paste it into the login form. Keep that output out of shared terminal logs.
 The installed listener defaults to `0.0.0.0:8720`. From a phone on the same trusted
 LAN, use `http://<Mac-LAN-IP>:8720`, not `127.0.0.1`. For the usual Wi-Fi interface,
 `ipconfig getifaddr en0` shows the address. Other network interfaces may differ.
+Detected addresses are local interface candidates, not a remote reachability
+check. Choose the Wi-Fi/Ethernet interface shared with your phone; VM/VPN
+interfaces may also appear. Discovery never contacts an external service. If
+address discovery fails, commands still succeed and show the local URL plus a
+LAN-address hint. A loopback-only listener explicitly reports LAN access disabled.
 Allow incoming Python connections if macOS asks. Local hostname access requires
 that exact hostname in `monitor.toml`'s `allowed_hosts`; private IPv4 addresses
 work directly. Local dashboard mode is intended for a trusted LAN. HTTP is

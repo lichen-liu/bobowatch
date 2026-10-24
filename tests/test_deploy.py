@@ -79,3 +79,47 @@ class DeployTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("--ram-size", result.stdout)
             self.assertFalse(root.exists())
+
+    def test_successful_deploy_reports_dashboard_urls_after_check(self):
+        import contextlib
+        import io
+
+        from bobowatch.config import initialize
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "runtime"
+            config = initialize(root, port=9123)
+            config.path.write_text(config.path.read_text().replace("127.0.0.1:", "0.0.0.0:"))
+            with (
+                patch.object(deploy.sys, "platform", "darwin"),
+                patch.object(deploy.os, "getuid", return_value=501),
+                patch.object(deploy, "deploy", return_value={"epoch": "retained"}),
+                patch(
+                    "bobowatch.urls.lan_interfaces",
+                    return_value=[{"interface": "en1", "address": "10.1.2.3"}],
+                ),
+                contextlib.redirect_stdout(io.StringIO()) as output,
+            ):
+                deploy.main(["deploy", "--runtime-dir", str(root)])
+            self.assertIn("deployed and checked; history epoch: retained", output.getvalue())
+            self.assertIn("Dashboard (this Mac): http://127.0.0.1:9123/", output.getvalue())
+            self.assertIn(
+                "Dashboard (local network, en1): http://10.1.2.3:9123/", output.getvalue()
+            )
+            self.assertNotIn(config.admin_token_file.read_text().strip(), output.getvalue())
+
+    def test_failed_deploy_does_not_report_dashboard_ready(self):
+        import contextlib
+        import io
+
+        with (
+            patch.object(deploy.sys, "platform", "darwin"),
+            patch.object(deploy.os, "getuid", return_value=501),
+            patch.object(deploy, "deploy", side_effect=ValueError("failed check")),
+            patch.object(deploy, "print_dashboard") as show,
+            contextlib.redirect_stderr(io.StringIO()),
+            self.assertRaises(SystemExit) as error,
+        ):
+            deploy.main(["deploy"])
+        self.assertEqual(error.exception.code, 1)
+        show.assert_not_called()
