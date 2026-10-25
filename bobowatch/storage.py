@@ -20,6 +20,7 @@ from typing import Protocol
 from .http_metrics import charts, load_http, store_http, summary
 from .protocol import BUCKETS_US, Conflict, Invalid, percentile
 from .ramdisk import validate_database
+from .ranges import validate_bounds
 from .retention import admit, footprint, maintain
 
 
@@ -29,7 +30,7 @@ class Busy(RuntimeError):
 
 class Storage(Protocol):
     def ingest(self, payload: dict, replica: str) -> dict: ...
-    def overview(self, filters: dict, window: int) -> dict: ...
+    def overview(self, filters: dict, window: int = 300, *, start_ms=None, end_ms=None) -> dict: ...
     def backup(self, target: Path) -> None: ...
     def close(self) -> None: ...
 
@@ -459,9 +460,16 @@ class SQLiteStore:
         )
         return {"sequence": p["sequence"], "duplicate": False}
 
-    def overview(self, filters, window, *, now_ms=None):
+    def overview(self, filters, window=300, *, now_ms=None, start_ms=None, end_ms=None):
         now = int(time.time() * 1000) if now_ms is None else now_ms
-        since = now - window * 1000
+        absolute = start_ms is not None or end_ms is not None
+        if absolute:
+            validate_bounds(start_ms, end_ms, now)
+            since, until = start_ms, end_ms
+            window = (until - since) / 1000
+        else:
+            since, until = now - window * 1000, now
+        end_operator = "<" if absolute else "<="
         with closing(self._connect()) as conn:
             conn.execute("PRAGMA query_only=ON")
             deadline = time.monotonic() + 2
@@ -514,9 +522,9 @@ class SQLiteStore:
                     selected = conn.execute(
                         f"""SELECT n.*,u.replica_id,r.site_id FROM snapshots n
                         JOIN runs u ON u.id=n.run_id JOIN replicas r ON r.id=u.replica_id
-                        WHERE u.replica_id IN ({placeholders}) AND n.observed_at_ms BETWEEN ? AND ?
+                        WHERE u.replica_id IN ({placeholders}) AND n.observed_at_ms >= ? AND n.observed_at_ms {end_operator} ?
                         ORDER BY n.observed_at_ms DESC LIMIT 4001""",
-                        (*ids, since, now),
+                        (*ids, since, until),
                     ).fetchall()
                     truncated = len(selected) > 4000
                     rows = [
@@ -544,16 +552,16 @@ class SQLiteStore:
                             f"""
                         SELECT e.id,e.occurred_at_ms,e.severity,e.message,u.replica_id AS replica,r.site_id AS site
                         FROM events e JOIN runs u ON u.id=e.run_id JOIN replicas r ON r.id=u.replica_id
-                        WHERE u.replica_id IN ({placeholders}) AND e.occurred_at_ms BETWEEN ? AND ?
+                        WHERE u.replica_id IN ({placeholders}) AND e.occurred_at_ms >= ? AND e.occurred_at_ms {end_operator} ?
                         ORDER BY e.occurred_at_ms DESC LIMIT 100""",
-                            (*ids, since, now),
+                            (*ids, since, until),
                         )
                     ]
                     for replica in replicas:
                         replica["history_truncated"] = truncated
                 load_http(conn, rows)
                 # Bounded output: bin recorded deltas, never average replica percentiles.
-                step = max(5_000, window * 1000 // 180)
+                step = max(5_000, (until - since) // 180)
                 bins = {}
                 for row in rows:
                     time_bin = row["observed_at_ms"] // step * step
@@ -608,13 +616,26 @@ class SQLiteStore:
                     for replica in site["replicas"]:
                         values = [row for row in site_rows if row["replica"] == replica["id"]]
                         replica["http"] = summary(values)
+                        replica["range_observed_at_ms"] = max(
+                            (row["observed_at_ms"] for row in values), default=None
+                        )
                         _, replica["current"] = charts(
                             values, [replica], step, now, self.config.stale_seconds * 1000
                         )
                 combined, current = charts(
                     rows, replicas, step, now, self.config.stale_seconds * 1000
                 )
+                if absolute:
+                    for item in [
+                        *sites,
+                        *(replica for site in sites for replica in site["replicas"]),
+                    ]:
+                        item["current"] = {key: None for key in item["current"]}
+                    current = {key: None for key in current}
                 return {
+                    "range_start_ms": since,
+                    "range_end_ms": until,
+                    "historical": absolute,
                     "http": summary(rows),
                     "charts": combined,
                     "current": current,

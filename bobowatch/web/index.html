@@ -6,6 +6,7 @@
     <title>BoboWatch · HTTP overview</title>
     <link rel="icon" href="/favicon.svg" />
     <link rel="stylesheet" href="/style.css" />
+    <script src="/ranges.js" defer></script>
     <script src="/app.js" defer></script>
   </head>
   <body>
@@ -104,14 +105,31 @@
             >
             <label class="time-filter"
               >Time window<select id="window">
-                <option value="30">Last 30 seconds</option>
-                <option value="60">Last 1 minute</option>
-                <option value="300" selected>Last 5 minutes</option>
-                <option value="900">Last 15 minutes</option>
-                <option value="1800">Last 30 minutes</option>
-                <option value="3600">Last hour</option>
-                <option value="21600">Last 6 hours</option>
-                <option value="86400">Last 24 hours</option>
+                <optgroup label="Rolling windows">
+                  <option value="30">Last 30 seconds</option>
+                  <option value="60">Last 1 minute</option>
+                  <option value="300" selected>Last 5 minutes</option>
+                  <option value="900">Last 15 minutes</option>
+                  <option value="1800">Last 30 minutes</option>
+                  <option value="3600">Last hour</option>
+                  <option value="21600">Last 6 hours</option>
+                  <option value="43200">Last 12 hours</option>
+                  <option value="86400">Last 24 hours</option>
+                  <option value="604800">Last 7 days</option>
+                  <option value="2592000">Last 30 days</option>
+                  <option value="7776000">Last 90 days</option>
+                </optgroup>
+                <optgroup label="Calendar periods">
+                  <option value="today">Today</option>
+                  <option value="yesterday">Yesterday</option>
+                  <option value="this-week">This week</option>
+                  <option value="last-week">Last week</option>
+                  <option value="this-month">This month</option>
+                  <option value="last-month">Last month</option>
+                  <option value="this-year">This year</option>
+                  <option value="last-year">Last year</option>
+                </optgroup>
+                <option value="custom">Custom range…</option>
               </select></label
             >
             <label class="refresh-filter"
@@ -127,6 +145,18 @@
               ↻ <span>Refresh</span>
             </button>
           </section>
+          <form id="custom-range" class="custom-range panel" hidden>
+            <label for="range-start">From
+              <input id="range-start" type="datetime-local" step="1" min="1970-01-01T00:00" required />
+            </label>
+            <label for="range-end">To
+              <input id="range-end" type="datetime-local" step="1" min="1970-01-01T00:00" required />
+            </label>
+            <button class="primary" type="submit">Apply range</button>
+            <p id="range-zone" class="range-zone"></p>
+            <p id="range-error" class="range-error" role="alert" hidden></p>
+          </form>
+          <p id="range-status" class="range-status" aria-live="polite"></p>
           <section
             id="summary"
             class="summary"

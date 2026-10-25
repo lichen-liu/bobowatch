@@ -11,24 +11,31 @@ const state = {
   session: 0,
   controller: null,
   refreshSeconds: 300,
+  customRange: null,
   hiddenSeries: new Map(),
 };
 let timer;
 const preferenceKey = "bobowatch.dashboard.preferences.v1";
-const timeWindows = new Set([
-  "30", "60", "300", "900", "1800", "3600", "21600", "86400",
-]);
+const ranges = BoboWatchRanges;
+const timeWindows = new Set([...ranges.rolling, ...ranges.calendar, "custom"]);
+const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "Local time";
 const refreshIntervals = new Set(["0", "30", "60", "300"]);
 function restorePreferences() {
   try {
     const saved = JSON.parse(localStorage.getItem(preferenceKey));
-    if (saved && timeWindows.has(saved.window)) $("window").value = saved.window;
+    if (saved?.custom) {
+      try { state.customRange = ranges.resolve("custom", Date.now(), saved.custom); }
+      catch { state.customRange = null; }
+    }
+    if (saved && timeWindows.has(saved.window) && (saved.window !== "custom" || state.customRange))
+      $("window").value = saved.window;
     if (saved && refreshIntervals.has(saved.refresh))
       $("auto-refresh").value = saved.refresh;
   } catch {
     // Storage may be unavailable or contain invalid data. Keep the defaults.
   }
   state.refreshSeconds = Number($("auto-refresh").value);
+  showCustomRange();
 }
 function savePreferences() {
   try {
@@ -37,11 +44,44 @@ function savePreferences() {
       JSON.stringify({
         window: $("window").value,
         refresh: $("auto-refresh").value,
+        custom: state.customRange && {
+          start_ms: state.customRange.start_ms, end_ms: state.customRange.end_ms,
+        },
       }),
     );
   } catch {
     // The dashboard still works when browser storage is unavailable.
   }
+}
+function showCustomRange() {
+  $("custom-range").hidden = $("window").value !== "custom";
+  $("range-error").hidden = true;
+  $("range-zone").textContent = `Times in ${timezone}. The end time is excluded.`;
+  if ($("window").value !== "custom") return;
+  if (!state.customRange) {
+    const now = Date.now();
+    state.customRange = {
+      start_ms: state.data?.range_start_ms ?? now - 300000,
+      end_ms: state.data?.range_end_ms ?? now,
+    };
+  }
+  $("range-start").value = ranges.toLocalInput(state.customRange.start_ms);
+  $("range-end").value = ranges.toLocalInput(state.customRange.end_ms);
+}
+function rangeStamp(ms) {
+  return new Date(ms).toLocaleString([], {
+    year: "numeric", month: "short", day: "numeric",
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+  });
+}
+function axisClock(ms) {
+  const duration = state.data.window_seconds;
+  if (duration <= 300) return detailClock(ms);
+  if (duration <= 86400) return clock(ms);
+  if (duration <= 172800) return new Date(ms).toLocaleString([], {
+    month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false,
+  });
+  return new Date(ms).toLocaleDateString([], { month: "short", day: "numeric" });
 }
 function scheduleRefresh() {
   clearTimeout(timer);
@@ -176,8 +216,8 @@ function lineChart(id, title, series, format) {
   const hidden = state.hiddenSeries.get(id) || new Set();
   const shown = series.filter((line) => !hidden.has(line.name));
   const points = state.data.charts,
-    start = state.data.now_ms - state.data.window_seconds * 1000,
-    end = state.data.now_ms;
+    start = state.data.range_start_ms ?? state.data.now_ms - state.data.window_seconds * 1000,
+    end = state.data.range_end_ms ?? state.data.now_ms;
   const all = shown
     .flatMap((line) =>
       (line.points || points).map((point) =>
@@ -224,9 +264,7 @@ function lineChart(id, title, series, format) {
         fill: "#a0adb6",
         "font-size": 8,
       },
-      (state.data.window_seconds <= 300 ? detailClock : clock)(
-        start + ((end - start) * i) / 4,
-      ),
+      axisClock(start + ((end - start) * i) / 4),
     );
   const gapMs = Math.max(state.data.bucket_seconds, state.data.sample_seconds) * 1800;
   shown.forEach((line, index) => {
@@ -310,7 +348,7 @@ function lineChart(id, title, series, format) {
       at = point.at_ms;
     crosshair.setAttribute("d", `M${x(at)} ${top}V${bottom}`);
     tooltip.replaceChildren(
-      el("strong", detailClock(at) + (point.partial ? " · partial" : "")),
+      el("strong", (state.data.window_seconds > 86400 ? rangeStamp(at) : detailClock(at)) + (point.partial ? " · partial" : "")),
     );
     shown.forEach((line, i) => {
       const sample = (line.points || points).find((p) => p.at_ms === at),
@@ -600,6 +638,7 @@ function routeTable() {
   );
 }
 function siteCard(site) {
+  const historical = state.data.historical;
   const node = el("article", undefined, "site"),
     fresh = state.error
       ? 0
@@ -617,20 +656,20 @@ function siteCard(site) {
       badge(
         state.error
           ? "Updates unavailable"
+          : historical ? "Selected range"
           : fresh === site.replicas.length
             ? "Telemetry current"
             : `${fresh}/${site.replicas.length} reporting`,
-        state.error || fresh < site.replicas.length ? "warning" : "",
+        state.error || (!historical && fresh < site.replicas.length) ? "warning" : "",
       ),
     ),
   );
   const values = [
     [
-      "Current traffic",
-      site.current.rps === null || state.error
-        ? "—"
-        : numeric(site.current.rps),
-      "req/s",
+      historical ? "Requests observed" : "Current traffic",
+      historical ? number(site.requests)
+        : site.current.rps === null || state.error ? "—" : numeric(site.current.rps),
+      historical ? "requests" : "req/s",
     ],
     ["p95 bound", latency(site.http.latency.p95), ""],
     [
@@ -654,6 +693,7 @@ function siteCard(site) {
   const rows = site.replicas.map((replica) => {
     const status = state.error
       ? "Updates unavailable"
+      : historical ? (replica.http.snapshot_count ? "Recorded" : "No data")
       : {
           fresh: "Reporting",
           stale: "Stale",
@@ -665,12 +705,14 @@ function siteCard(site) {
     const identity = append(
       el("td"),
       button,
-      el("small", `${replica.host_id} · ${age(replica.observed_at_ms)}`),
+      el("small", `${replica.host_id} · ${historical
+        ? replica.range_observed_at_ms ? rangeStamp(replica.range_observed_at_ms) : "No observations"
+        : age(replica.observed_at_ms)}`),
     );
     return append(
       el("tr"),
       identity,
-      el("td", state.error ? "—" : numeric(replica.current.rps), "numeric"),
+      el("td", historical ? number(replica.http.requests) : state.error ? "—" : numeric(replica.current.rps), "numeric"),
       el("td", latency(replica.http.latency.p95), "numeric"),
       el(
         "td",
@@ -681,14 +723,14 @@ function siteCard(site) {
       ),
       el(
         "td",
-        state.error ? "—" : number(replica.current.in_flight),
+        historical ? number(replica.http.snapshot_count) : state.error ? "—" : number(replica.current.in_flight),
         "numeric",
       ),
       append(
         el("td"),
         badge(
           status,
-          state.error || replica.status !== "fresh" ? "warning" : "",
+          state.error || (!historical && replica.status !== "fresh") ? "warning" : "",
         ),
       ),
     );
@@ -696,7 +738,7 @@ function siteCard(site) {
   node.append(
     append(
       el("div", undefined, "table-scroll"),
-      table(["Replica", "req/s", "p95", "5xx", "Active", "Telemetry"], rows),
+      table(["Replica", historical ? "Requests" : "req/s", "p95", "5xx", historical ? "Samples" : "Active", historical ? "History" : "Telemetry"], rows),
     ),
     el(
       "p",
@@ -730,6 +772,7 @@ function render() {
     ),
   );
   $("updated").textContent = `Updated ${detailClock(data.now_ms)}`;
+  $("range-status").textContent = `${rangeStamp(data.range_start_ms)} → ${rangeStamp(data.range_end_ms)} · ${timezone}${data.historical ? " · Range totals; end excluded" : ""}`;
   $("clear").hidden = !state.replica;
   $("scope-meta").replaceChildren(
     el("div", `${data.sites.length} sites · ${replicas.length} replicas`),
@@ -738,20 +781,23 @@ function render() {
       `${number(metrics.snapshot_count)} observations · ${points.length} chart points`,
     ),
   );
-  const issues =
-    state.error ||
-    (data.sites.some((s) => s.history_truncated)
+  const coverage = !metrics.snapshot_count && data.historical
+    ? "No retained observations in this range."
+    : storage?.oldest_at_ms > data.range_start_ms
+      ? "Only retained history is shown; this range starts before the oldest available observation."
+      : "";
+  const issues = state.error ||
+    (data.sites.some(site => site.history_truncated)
       ? "This window exceeds the 4,000-snapshot query budget. Charts and totals cover only the newest observations; narrow the window."
-      : fresh < replicas.length
-        ? "Some expected replicas have no current telemetry. Missing values stay unknown."
-        : "");
+      : coverage || (!data.historical && fresh < replicas.length
+        ? "Some expected replicas have no current telemetry. Missing values stay unknown." : ""));
   $("notice").hidden = !issues;
   $("notice").textContent = issues;
   $("summary").replaceChildren(
     kpi(
-      "Request rate",
-      state.error ? "—" : numeric(data.current.rps),
-      "req/s",
+      data.historical ? "Requests observed" : "Request rate",
+      data.historical ? number(metrics.requests) : state.error ? "—" : numeric(data.current.rps),
+      data.historical ? "requests" : "req/s",
       `${number(metrics.requests)} requests in window`,
       (p) => p.rps,
       colors.teal,
@@ -778,10 +824,10 @@ function render() {
       "⌁",
     ),
     kpi(
-      "Requests in flight",
-      state.error ? "—" : number(data.current.in_flight),
-      "active",
-      `${fresh} / ${replicas.length} replicas reporting`,
+      data.historical ? "Observations" : "Requests in flight",
+      data.historical ? number(metrics.snapshot_count) : state.error ? "—" : number(data.current.in_flight),
+      data.historical ? "samples" : "active",
+      data.historical ? "Recorded in selected range" : `${fresh} / ${replicas.length} replicas reporting`,
       (p) => p.in_flight,
       colors.blue,
       "⇄",
@@ -802,9 +848,8 @@ function render() {
   lineChart("traffic-chart", "Request rate over time", traffic, (v, tick) =>
     tick ? numeric(v, 0) : `${numeric(v, 2)} req/s`,
   );
-  $("traffic-value").textContent = state.error
-    ? "—"
-    : `${numeric(data.current.rps)} req/s`;
+  $("traffic-value").textContent = data.historical
+    ? `${number(metrics.requests)} requests` : state.error ? "—" : `${numeric(data.current.rps)} req/s`;
   lineChart(
     "latency-chart",
     "Response time percentile bounds",
@@ -878,7 +923,9 @@ function render() {
   responseMix();
   routeTable();
   $("replica-count").textContent =
-    `${fresh} / ${replicas.length} reporting · select a replica to inspect`;
+    data.historical
+      ? `${replicas.filter(replica => replica.http.snapshot_count).length} / ${replicas.length} with observations · select a replica to inspect`
+      : `${fresh} / ${replicas.length} reporting · select a replica to inspect`;
   $("sites").replaceChildren(
     ...(data.sites.length
       ? data.sites.map(siteCard)
@@ -922,7 +969,10 @@ async function refresh() {
   state.controller = controller;
   const timeout = setTimeout(() => controller.abort(), 6000);
   try {
-    const query = new URLSearchParams({ window: $("window").value });
+    const selected = ranges.resolve($("window").value, Date.now(), state.customRange);
+    const query = new URLSearchParams(selected.absolute
+      ? { start_ms: selected.start_ms, end_ms: selected.end_ms }
+      : { window: selected.window });
     for (const key of ["project", "site", "host"])
       if ($(key).value) query.set(key, $(key).value);
     if (state.replica) query.set("replica", state.replica);
@@ -1055,11 +1105,27 @@ $("logout").addEventListener("click", () => {
 });
 for (const id of ["project", "site", "host", "window"])
   $(id).addEventListener("change", () => {
-    state.replica = "";
+    if (id !== "window") state.replica = "";
     if (id === "project") $("site").value = "";
-    if (id === "window") savePreferences();
+    if (id === "window") { showCustomRange(); savePreferences(); }
     refresh();
   });
+$("custom-range").addEventListener("submit", event => {
+  event.preventDefault();
+  try {
+    const chosen = ranges.resolve("custom", Date.now(), {
+      start_ms: ranges.parseLocalInput($("range-start").value),
+      end_ms: ranges.parseLocalInput($("range-end").value),
+    });
+    state.customRange = { start_ms: chosen.start_ms, end_ms: chosen.end_ms };
+    $("range-error").hidden = true;
+    savePreferences();
+    refresh();
+  } catch (error) {
+    $("range-error").textContent = error.message;
+    $("range-error").hidden = false;
+  }
+});
 $("auto-refresh").addEventListener("change", () => {
   state.refreshSeconds = Number($("auto-refresh").value);
   savePreferences();

@@ -40,3 +40,8 @@ by this workflow. Local clones do not install these server-side rules.
 
 References: [workflow events](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows)
 and [required checks](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks).
+
+
+Calendar boundary and daylight-saving tests run with Node's built-in test runner
+in the Python checks workflow. The hosted runner already includes Node; no npm
+packages or application runtime dependencies are added.

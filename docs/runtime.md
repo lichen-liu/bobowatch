@@ -99,6 +99,45 @@ The dashboard is empty until a real app is registered and sends snapshots.
 Installed operation never seeds fictional data. Legacy `python -m bobowatch demo`
 remains a separate disk-backed review tool; it is not the installed runtime.
 
+## Calendar and custom history ranges
+
+The time-window menu separates rolling windows from calendar periods:
+
+| Preset | Range |
+| --- | --- |
+| Last 24 hours / 7 days / 30 days / 90 days | Exact elapsed duration ending at refresh time |
+| Today / Yesterday | Local midnight to now / the previous complete local day |
+| This week / Last week | Monday 00:00 to now / the previous complete Monday–Monday week |
+| This month / Last month | First of the month to now / the previous complete calendar month |
+| This year / Last year | January 1 to now / the previous complete calendar year |
+| Custom range | Explicit start and end date/time selected with native calendar controls |
+
+The browser's local timezone is shown below the controls. Calendar days follow
+local daylight-saving changes, so Yesterday may span 23 or 25 hours; Last 24 hours
+always spans 24 elapsed hours. Weeks start on Monday. For custom ranges, select
+both dates/times and click **Apply range**. The start is included and the end is
+excluded; select the next day's midnight to include a complete final day. Empty,
+reversed, nonexistent local times and future ranges are rejected. Ambiguous
+fall-back times use the earlier offset, matching the browser's date handling.
+
+Presets and applied custom boundaries are remembered across reloads. Auto-refresh
+advances rolling/current-calendar ranges; a custom range stays fixed until you
+apply new boundaries. Unapplied edits do not change the displayed range. Five
+minutes remains the initial default. Historical/calendar views show request and
+observation totals in place of current live gauges; chart axes/tooltips include
+dates for longer spans.
+
+Only retained RAM history can be displayed. Selecting last month does not create
+missing records or recover history lost on reboot. The existing 4,000-snapshot
+query cap and two-second read budget still apply; the dashboard identifies capped,
+empty or partially retained results rather than claiming a complete period.
+
+The overview API accepts either a supported `window` in seconds or both
+`start_ms` and `end_ms` as UTC Unix-millisecond integers, alongside existing scope
+filters. Absolute ranges are half-open and return their exact bounds. A small
+30-second future tolerance accommodates browser/server clock skew; it does not
+create future observations. No SQL migration or new runtime dependency is needed.
+
 ## One-command deployment
 
 ```sh
@@ -291,3 +330,13 @@ Flightrepo checkout. It saves the target for later starts and deployments; no
 reinstall is required. Enabling monitoring that was disabled at process startup
 still needs a restart. Endpoint-only manual settings without a local registration
 record are not re-provisioned at startup.
+
+
+For development, calendar and daylight-saving unit tests use Node's built-in test
+runner (CI's runner already provides Node):
+
+```sh
+node --test tests/test_calendar_ranges.cjs
+```
+
+Node is not required to install or serve BoboWatch.
