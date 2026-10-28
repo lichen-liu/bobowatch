@@ -2,6 +2,7 @@
 
 import io
 import json
+import sqlite3
 import tempfile
 import time
 import unittest
@@ -14,8 +15,9 @@ from bobowatch import Monitor
 from bobowatch.application import Application
 from bobowatch.config import initialize
 from bobowatch.history import aggregate_history
-from bobowatch.protocol import validate
-from bobowatch.storage import HistoryQueryTimeout, SQLiteStore
+from bobowatch.http_metrics import load_http, summary
+from bobowatch.protocol import BUCKETS_US, validate
+from bobowatch.storage import SQLiteStore
 
 
 class HistoryTests(unittest.TestCase):
@@ -62,14 +64,58 @@ class HistoryTests(unittest.TestCase):
                 ]
             )
 
-    def overview(self, filters=None, *, limit=0, window=86400, **bounds):
-        with patch("bobowatch.storage.RAW_HISTORY_LIMIT", limit):
-            return self.store.overview(filters or {}, window, now_ms=self.now, **bounds)
+    def overview(self, filters=None, *, raw=False, window=86400, **bounds):
+        if raw:
+            with patch("bobowatch.storage.aggregate_history", side_effect=self.raw_history):
+                return self.store.overview(filters or {}, window, now_ms=self.now, **bounds)
+        return self.store.overview(filters or {}, window, now_ms=self.now, **bounds)
+
+    def raw_history(self, conn, replicas, since, until, step, *, exclusive_end=False):
+        marks = ",".join("?" for _ in replicas)
+        end = "<" if exclusive_end else "<="
+        rows = [
+            dict(row)
+            for row in conn.execute(
+                f"""
+            SELECT n.*,u.replica_id AS replica,r.site_id AS site,u.started_at_ms AS run_started_at_ms
+            FROM snapshots n JOIN runs u ON u.id=n.run_id JOIN replicas r ON r.id=u.replica_id
+            WHERE u.replica_id IN ({marks}) AND n.observed_at_ms>=? AND n.observed_at_ms {end} ?
+            ORDER BY n.observed_at_ms DESC""",
+                (*replicas, since, until),
+            )
+        ]
+        by_id = {row["id"]: row for row in rows}
+        for row in rows:
+            row["buckets"] = [0] * (len(BUCKETS_US) + 1)
+        for offset in range(0, len(rows), 200):
+            keys = [row["id"] for row in rows[offset : offset + 200]]
+            placeholders = ",".join("?" for _ in keys)
+            for bucket in conn.execute(
+                f"SELECT * FROM histogram_buckets WHERE snapshot_id IN ({placeholders})", keys
+            ):
+                by_id[bucket["snapshot_id"]]["buckets"][bucket["bucket_index"]] = bucket["delta"]
+        load_http(conn, rows)
+        endpoints = {}
+        scopes = [("all", "", rows)]
+        scopes += [
+            ("site", site, [r for r in rows if r["site"] == site])
+            for site in {r["site"] for r in rows}
+        ]
+        scopes += [
+            ("replica", replica, [r for r in rows if r["replica"] == replica])
+            for replica in replicas
+        ]
+        for kind, scope, values in scopes:
+            metrics = summary(values)
+            endpoints[kind, scope] = {key: metrics[key] for key in ("routes", "route_count")}
+        return rows, endpoints
 
     def assertEquivalent(self, expected, actual, path="overview"):
         if isinstance(expected, dict):
             self.assertEqual(expected.keys(), actual.keys(), path)
             for key in expected:
+                if path == "overview.storage" and key == "volume_free_bytes":
+                    continue
                 self.assertEquivalent(expected[key], actual[key], f"{path}.{key}")
         elif isinstance(expected, list):
             self.assertEqual(len(expected), len(actual), path)
@@ -116,7 +162,7 @@ class HistoryTests(unittest.TestCase):
         self.assertLessEqual(len(actual["charts"]), 181)
         self.assertEqual(sum(r["errors"] for r in metrics["routes"] if r["route"] == "/quiet"), 3)
         self.assertTrue(all(not s["history_truncated"] for s in actual["sites"]))
-        self.assertEquivalent(self.overview(limit=10000), actual)
+        self.assertEquivalent(self.overview(raw=True), actual)
         scoped = self.overview({"site_id": "flights"})
         self.assertAlmostEqual(scoped["current"]["rps"], 6 / 15)
         self.assertEqual(scoped["current"]["in_flight"], 15)
@@ -162,11 +208,11 @@ class HistoryTests(unittest.TestCase):
             for window in (30, 60, 300, 86400):
                 with self.subTest(filters=filters, window=window):
                     self.assertEquivalent(
-                        self.overview(filters, limit=10000, window=window),
+                        self.overview(filters, raw=True, window=window),
                         self.overview(filters, window=window),
                     )
         bounds = {"start_ms": self.now - 60000, "end_ms": self.now - 15000}
-        self.assertEquivalent(self.overview(limit=10000, **bounds), self.overview(**bounds))
+        self.assertEquivalent(self.overview(raw=True, **bounds), self.overview(**bounds))
         measured = self.overview({"id": "flights-r01"})["http"]
         self.assertEqual(measured["requests"], 4)
         self.assertEqual(measured["http_requests"], 2)
@@ -185,13 +231,14 @@ class HistoryTests(unittest.TestCase):
                 monitor.record_request(0.1, route="/shared")
             self.ingest([self.payload(monitor, self.now - 1000, 15000)])
         actual = self.overview({"site_id": "flights"})
-        self.assertEquivalent(self.overview({"site_id": "flights"}, limit=10000), actual)
+        self.assertEquivalent(self.overview({"site_id": "flights"}, raw=True), actual)
         shared = next(row for row in actual["http"]["routes"] if row["route"] == "/shared")
         self.assertEqual(shared["requests"], 30)
         self.assertEqual(actual["http"]["route_count"], 40)
         for replica in actual["sites"][0]["replicas"]:
             self.assertEqual(replica["http"]["route_count"], 21)
-            self.assertNotIn("/shared", {r["route"] for r in replica["http"]["routes"]})
+            self.assertIn("/shared", {r["route"] for r in replica["http"]["routes"]})
+            self.assertEqual(len(replica["http"]["routes"]), 21)
 
     def test_equal_observation_timestamps_choose_the_newest_run_for_live_gauges(self):
         old = self.monitor(started=self.now - 30000)
@@ -203,38 +250,138 @@ class HistoryTests(unittest.TestCase):
             new.record_request(0.1)
         self.ingest([self.payload(new, self.now - 1, 15000, active=7)])
         actual = self.overview({"id": "flights-r01"})
-        self.assertEquivalent(self.overview({"id": "flights-r01"}, limit=10000), actual)
+        self.assertEquivalent(self.overview({"id": "flights-r01"}, raw=True), actual)
         self.assertEqual(actual["http"]["requests"], 7)
         self.assertAlmostEqual(actual["current"]["rps"], 2 / 15)
         self.assertEqual(actual["current"]["in_flight"], 7)
 
-    def test_timeout_returns_no_partial_result_and_reading_recovers(self):
-        monitor = self.monitor()
+    def test_complete_events_and_no_query_deadline(self):
+        monitor = self.monitor(started=self.now - 600000)
         samples = []
-        for step in range(1, 21):
+        for step in range(550):
             monitor.record_request(0.1)
-            samples.append(self.payload(monitor, self.now - (20 - step) * 1000, step * 1000))
+            at = self.now - (550 - step) * 1000
+            payload = self.payload(monitor, at, (step + 1) * 1000)
+            payload["events"] = [
+                {
+                    "id": f"event-{step}",
+                    "at_ms": at,
+                    "severity": "info",
+                    "message": f"event number {step}",
+                }
+            ]
+            samples.append(validate(payload))
         self.ingest(samples)
-        with patch("bobowatch.storage.HISTORY_QUERY_SECONDS", 0):
-            with self.assertRaises(HistoryQueryTimeout):
-                self.overview()
-            app = Application(self.config, self.store)
-            env = {
-                "REQUEST_METHOD": "GET",
-                "PATH_INFO": "/api/overview",
-                "QUERY_STRING": "window=86400",
-                "HTTP_HOST": "127.0.0.1:8720",
-                "REMOTE_ADDR": "127.0.0.1",
-                "wsgi.input": io.BytesIO(),
-                "HTTP_AUTHORIZATION": "Bearer " + self.config.admin_token_file.read_text().strip(),
-            }
-            status = []
-            body = b"".join(app(env, lambda response, headers: status.append(response)))
-            self.assertEqual(status[0], "503 Service Unavailable")
-            self.assertEqual(json.loads(body)["code"], "history_query_timeout")
-        self.assertEqual(self.overview()["http"]["requests"], 20)
+        connection = self.store._connect()
+        test = self
+
+        class NoDeadline:
+            def __getattr__(self, name):
+                return getattr(connection, name)
+
+            def __enter__(self):
+                connection.__enter__()
+                return self
+
+            def __exit__(self, *args):
+                return connection.__exit__(*args)
+
+            def set_progress_handler(self, *args):
+                test.fail("Dashboard queries must not install a time budget")
+
+        with patch.object(self.store, "_connect", return_value=NoDeadline()):
+            data = self.overview(window="all")
+        self.assertEqual(len(data["events"]), 550)
+        self.assertEqual(data["events"][-1]["id"], "event-0")
+        self.assertEqual(data["http"]["snapshot_count"], 550)
+        self.assertEqual(data["http"]["requests"], 550)
+        app = Application(self.config, self.store)
+        env = {
+            "REQUEST_METHOD": "GET",
+            "PATH_INFO": "/api/overview",
+            "QUERY_STRING": "window=all&bucket_ms=1",
+            "HTTP_HOST": "127.0.0.1:8720",
+            "REMOTE_ADDR": "127.0.0.1",
+            "wsgi.input": io.BytesIO(),
+            "HTTP_AUTHORIZATION": "Bearer " + self.config.admin_token_file.read_text().strip(),
+        }
+        status = []
+        body = b"".join(app(env, lambda response, headers: status.append(response)))
+        self.assertEqual(status[0], "200 OK")
+        full = json.loads(body)
+        self.assertEqual(len(full["events"]), 550)
+        self.assertEqual(len(full["charts"]), 550)
+
+    def test_every_timestamp_and_grouping_include_identical_totals(self):
+        monitor = self.monitor(started=self.now - 120000)
+        samples = []
+        for step in range(1000):
+            monitor.record_request(0.1, route="/busy", bytes_sent=100, bytes_received=10)
+            samples.append(self.payload(monitor, self.now - 1000 + step, (step + 1) * 100))
+        self.ingest(samples)
+        for resolution, points in ((1, 1000), (60000, None), (3600000, None), (86400000, None)):
+            data = self.overview(window="all", bucket_ms=resolution)
+            self.assertEqual(data["http"]["snapshot_count"], 1000)
+            self.assertEqual(data["http"]["requests"], 1000)
+            self.assertEqual(sum(point["requests"] for point in data["charts"]), 1000)
+            self.assertTrue(
+                all(
+                    data["range_start_ms"] <= point["at_ms"] < data["range_end_ms"]
+                    for point in data["charts"]
+                )
+            )
+            if points:
+                self.assertEqual(len(data["charts"]), points)
+
+    def test_retired_replica_history_remains_visible_and_is_not_a_live_gauge(self):
+        old = self.monitor()
+        old.record_request(2, 503, route="/quiet")
+        self.ingest([self.payload(old, self.now - 10000, 15000, active=8)])
+        config = replace(
+            self.config,
+            replicas=tuple(dict(r, retired=r["id"] == "flights-r01") for r in self.config.replicas),
+        )
+        self.store.reload_inventory(config)
+        data = self.overview({"id": "flights-r01"}, window="all")
+        self.assertEqual(data["http"]["requests"], 1)
+        self.assertEqual(data["http"]["errors"], 1)
+        self.assertEqual(data["sites"][0]["replicas"][0]["status"], "retired")
+        self.assertIsNone(data["current"]["rps"])
+        self.assertIsNone(data["current"]["in_flight"])
 
     def test_empty_range_and_inventory_do_not_create_observations(self):
-        self.assertEquivalent(self.overview(limit=10000), self.overview())
+        self.assertEquivalent(self.overview(raw=True), self.overview())
         with closing(self.store._connect()) as conn:
             self.assertEqual(aggregate_history(conn, [], 0, self.now, 5000), ([], {}))
+
+    def test_lock_wait_retries_and_dashboard_metadata_does_not_wait_on_writer_queue(self):
+        expected = self.overview()
+        busy = sqlite3.OperationalError("locked")
+        busy.sqlite_errorcode = sqlite3.SQLITE_BUSY
+        with (
+            patch.object(self.store, "_overview", side_effect=[busy, busy, expected]),
+            patch("bobowatch.storage.time.sleep") as sleep,
+        ):
+            self.assertEqual(self.overview(), expected)
+            self.assertEqual(sleep.call_count, 2)
+        with patch.object(
+            self.store,
+            "_submit",
+            side_effect=AssertionError(
+                "Dashboard reads must not use the writer acknowledgement deadline"
+            ),
+        ):
+            self.assertIn("storage", self.overview())
+
+    def test_all_endpoints_are_returned_even_beyond_one_hundred_templates(self):
+        for run in range(8):
+            monitor = self.monitor(
+                started=self.now - 100000 + run * 1000,
+                routes=tuple(f"/template-{run}-{i}" for i in range(20)),
+            )
+            monitor.record_request(0.1, route=f"/template-{run}-0")
+            self.ingest([self.payload(monitor, self.now - 20000 + run * 1000, 15000)])
+        metrics = self.overview()["http"]
+        self.assertEqual(metrics["route_count"], 161)
+        self.assertEqual(len(metrics["routes"]), 161)
+        self.assertIn("/template-0-19", {r["route"] for r in metrics["routes"]})

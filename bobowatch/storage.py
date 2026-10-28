@@ -1,7 +1,7 @@
 """SQLite backend; domain/API code consumes a narrow Storage protocol.
 
 A bounded single writer owns its connection. All snapshot state, deltas and events
-commit together. Read connections are independent and short lived.
+commit together. Read connections are independent and keep a consistent view until completion.
 """
 
 import hashlib
@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Protocol
 
 from .history import aggregate_history
-from .http_metrics import charts, load_http, store_http, summary
+from .http_metrics import charts, store_http, summary
 from .protocol import BUCKETS_US, Conflict, Invalid, percentile
 from .ramdisk import validate_database
 from .ranges import validate_bounds
@@ -29,17 +29,11 @@ class Busy(RuntimeError):
     pass
 
 
-class HistoryQueryTimeout(Busy):
-    pass
-
-
-RAW_HISTORY_LIMIT = 4000
-HISTORY_QUERY_SECONDS = 2
-
-
 class Storage(Protocol):
     def ingest(self, payload: dict, replica: str) -> dict: ...
-    def overview(self, filters: dict, window: int = 300, *, start_ms=None, end_ms=None) -> dict: ...
+    def overview(
+        self, filters: dict, window=300, *, start_ms=None, end_ms=None, bucket_ms=None
+    ) -> dict: ...
     def backup(self, target: Path) -> None: ...
     def close(self) -> None: ...
 
@@ -278,29 +272,29 @@ class SQLiteStore:
         self._submit(apply)
         self.config, self._quota = config, config.quota_bytes
 
-    def storage_status(self):
-        def status(conn):
-            stats = footprint(conn, self.path)
-            state = dict(conn.execute("SELECT * FROM storage_state WHERE id=1").fetchone())
-            oldest, newest = conn.execute(
-                "SELECT MIN(observed_at_ms),MAX(observed_at_ms) FROM snapshots"
-            ).fetchone()
-            usage = shutil.disk_usage(self.path.parent)
-            return {
-                **stats,
-                **state,
-                "quota_bytes": self._quota,
-                "quota_applied": self._quota is None or stats["used_bytes"] <= self._quota,
-                "oldest_at_ms": oldest,
-                "newest_at_ms": newest,
-                "reserve_bytes": max(65536, self._quota // 10) if self._quota else 0,
-                "ram_only": self.config.ram_required,
-                "volume_bytes": usage.total,
-                "volume_free_bytes": usage.free,
-                "database": str(self.path),
-            }
+    def _storage_status(self, conn):
+        stats = footprint(conn, self.path)
+        state = dict(conn.execute("SELECT * FROM storage_state WHERE id=1").fetchone())
+        oldest, newest = conn.execute(
+            "SELECT MIN(observed_at_ms),MAX(observed_at_ms) FROM snapshots"
+        ).fetchone()
+        usage = shutil.disk_usage(self.path.parent)
+        return {
+            **stats,
+            **state,
+            "quota_bytes": self._quota,
+            "quota_applied": self._quota is None or stats["used_bytes"] <= self._quota,
+            "oldest_at_ms": oldest,
+            "newest_at_ms": newest,
+            "reserve_bytes": max(65536, self._quota // 10) if self._quota else 0,
+            "ram_only": self.config.ram_required,
+            "volume_bytes": usage.total,
+            "volume_free_bytes": usage.free,
+            "database": str(self.path),
+        }
 
-        return self._submit(status)
+    def storage_status(self):
+        return self._submit(self._storage_status)
 
     def maintain(self):
         self._submit(lambda conn: maintain(conn, self.path, self._quota, force=True, seconds=0.5))
@@ -469,41 +463,59 @@ class SQLiteStore:
         )
         return {"sequence": p["sequence"], "duplicate": False}
 
-    def overview(self, filters, window=300, *, now_ms=None, start_ms=None, end_ms=None):
-        try:
-            return self._overview(filters, window, now_ms=now_ms, start_ms=start_ms, end_ms=end_ms)
-        except sqlite3.OperationalError as error:
-            if getattr(error, "sqlite_errorcode", None) == sqlite3.SQLITE_INTERRUPT:
-                raise HistoryQueryTimeout(
-                    "This history query exceeded its time budget. Narrow the time range or scope and retry."
-                ) from None
-            raise
+    def overview(
+        self, filters, window=300, *, now_ms=None, start_ms=None, end_ms=None, bucket_ms=None
+    ):
+        # A lock can delay an internal dashboard read; it does not justify an
+        # incomplete answer or an artificial query deadline.
+        while True:
+            try:
+                return self._overview(
+                    filters,
+                    window,
+                    now_ms=now_ms,
+                    start_ms=start_ms,
+                    end_ms=end_ms,
+                    bucket_ms=bucket_ms,
+                )
+            except sqlite3.OperationalError as error:
+                code = getattr(error, "sqlite_errorcode", 0) & 255
+                if code not in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+                    raise
+                time.sleep(0.05)
 
-    def _overview(self, filters, window=300, *, now_ms=None, start_ms=None, end_ms=None):
+    def _overview(
+        self, filters, window=300, *, now_ms=None, start_ms=None, end_ms=None, bucket_ms=None
+    ):
         now = int(time.time() * 1000) if now_ms is None else now_ms
         absolute = start_ms is not None or end_ms is not None
+        all_history = window == "all" and not absolute
+        historical = absolute or all_history
         if absolute:
             validate_bounds(start_ms, end_ms, now)
             since, until = start_ms, end_ms
             window = (until - since) / 1000
         else:
-            since, until = now - window * 1000, now
-        end_operator = "<" if absolute else "<="
+            since, until = 0 if all_history else max(0, now - window * 1000), now
+        if bucket_ms is not None and (
+            type(bucket_ms) is not int or not 1 <= bucket_ms <= 2**63 - 1
+        ):
+            raise Invalid("Chart bucket_ms must be a positive SQL integer")
+        end_operator = "<" if historical else "<="
         with closing(self._connect()) as conn:
             conn.execute("PRAGMA query_only=ON")
-            deadline = time.monotonic() + HISTORY_QUERY_SECONDS
-            conn.set_progress_handler(lambda: int(time.monotonic() > deadline), 1000)
-            # One short read transaction gives all panels a consistent view.
+            # One read transaction gives all panels and storage metadata a
+            # consistent view. There is no row cap or query time budget.
             with conn:
                 conn.execute("BEGIN")
                 inventory = [
                     dict(row)
                     for row in conn.execute("""
-                    SELECT r.id,r.title,r.site_id,r.host_id,s.project_id,s.environment,
+                    SELECT r.id,r.title,r.site_id,r.host_id,r.retired,s.project_id,s.environment,
                            s.title AS site_title,p.title AS project_title,h.title AS host_title
                     FROM replicas r JOIN sites s ON s.id=r.site_id
                     JOIN projects p ON p.id=s.project_id JOIN hosts h ON h.id=r.host_id
-                    WHERE r.retired=0 ORDER BY s.project_id,s.id,r.id""")
+                    ORDER BY s.project_id,s.id,r.id""")
                 ]
                 inventory = [
                     r
@@ -511,8 +523,8 @@ class SQLiteStore:
                     if all(not value or str(r.get(key)) == value for key, value in filters.items())
                 ]
                 replicas, rows, events = [], [], []
-                endpoints = None
-                step = max(5_000, (until - since) // 180)
+                endpoints = {}
+                step = bucket_ms or max(5_000, (until - since) // 180)
                 for replica in inventory:
                     latest = conn.execute(
                         """SELECT n.*,u.revision FROM snapshots n
@@ -531,7 +543,7 @@ class SQLiteStore:
                     replicas.append(
                         {
                             **replica,
-                            "status": status,
+                            "status": "retired" if replica["retired"] else status,
                             "observed_at_ms": latest["observed_at_ms"] if latest else None,
                             "received_at_ms": latest["received_at_ms"] if latest else None,
                             "revision": latest["revision"] if latest else None,
@@ -540,39 +552,19 @@ class SQLiteStore:
                 if replicas:
                     placeholders = ",".join("?" for _ in replicas)
                     ids = [r["id"] for r in replicas]
-                    selected = conn.execute(
-                        f"""SELECT n.*,u.replica_id,r.site_id,u.started_at_ms AS run_started_at_ms FROM snapshots n
-                        JOIN runs u ON u.id=n.run_id JOIN replicas r ON r.id=u.replica_id
-                        WHERE u.replica_id IN ({placeholders}) AND n.observed_at_ms >= ? AND n.observed_at_ms {end_operator} ?
-                        ORDER BY n.observed_at_ms DESC LIMIT ?""",
-                        (*ids, since, until, RAW_HISTORY_LIMIT + 1),
-                    ).fetchall()
-                    if len(selected) > RAW_HISTORY_LIMIT:
-                        del selected
-                        rows, endpoints = aggregate_history(
-                            conn, ids, since, until, step, exclusive_end=absolute
-                        )
-                    else:
-                        rows = [
-                            {
-                                **dict(row),
-                                "replica": row["replica_id"],
-                                "site": row["site_id"],
-                                "buckets": [0] * (len(BUCKETS_US) + 1),
-                            }
-                            for row in selected
-                        ]
-                        by_id = {row["id"]: row for row in rows}
-                        for offset in range(0, len(rows), 200):
-                            keys = [row["id"] for row in rows[offset : offset + 200]]
-                            marks = ",".join("?" for _ in keys)
-                            for bucket in conn.execute(
-                                f"SELECT * FROM histogram_buckets WHERE snapshot_id IN ({marks})",
-                                keys,
-                            ):
-                                by_id[bucket["snapshot_id"]]["buckets"][bucket["bucket_index"]] = (
-                                    bucket["delta"]
-                                )
+                    if all_history:
+                        first, last = conn.execute(
+                            f"""SELECT MIN(n.observed_at_ms),MAX(n.observed_at_ms)
+                            FROM snapshots n JOIN runs u ON u.id=n.run_id
+                            WHERE u.replica_id IN ({placeholders})""",
+                            ids,
+                        ).fetchone()
+                        since = first if first is not None else now
+                        until = max(now + 1, last + 1) if last is not None else now + 1
+                    step = bucket_ms or max(5_000, (until - since) // 180)
+                    rows, endpoints = aggregate_history(
+                        conn, ids, since, until, step, exclusive_end=historical
+                    )
                     events = [
                         dict(row)
                         for row in conn.execute(
@@ -580,27 +572,22 @@ class SQLiteStore:
                         SELECT e.id,e.occurred_at_ms,e.severity,e.message,u.replica_id AS replica,r.site_id AS site
                         FROM events e JOIN runs u ON u.id=e.run_id JOIN replicas r ON r.id=u.replica_id
                         WHERE u.replica_id IN ({placeholders}) AND e.occurred_at_ms >= ? AND e.occurred_at_ms {end_operator} ?
-                        ORDER BY e.occurred_at_ms DESC LIMIT 100""",
+                        ORDER BY e.occurred_at_ms DESC,e.id""",
                             (*ids, since, until),
                         )
                     ]
                     for replica in replicas:
                         replica["history_truncated"] = False
-                if endpoints is None:
-                    load_http(conn, rows)
 
                 def http_summary(values, kind, scope=""):
-                    metrics = summary(values, include_routes=endpoints is None)
-                    if endpoints is not None:
-                        metrics.update(
-                            endpoints.get((kind, scope), {"routes": [], "route_count": 0})
-                        )
+                    metrics = summary(values, include_routes=False)
+                    metrics.update(endpoints.get((kind, scope), {"routes": [], "route_count": 0}))
                     return metrics
 
-                # Bounded output: bin recorded deltas, never average replica percentiles.
+                # Group every recorded delta; never sample records or average percentiles.
                 bins = {}
                 for row in rows:
-                    time_bin = row["observed_at_ms"] // step * step
+                    time_bin = max(since, row["observed_at_ms"] // step * step)
                     cell = bins.setdefault(
                         (row["site"], time_bin),
                         {
@@ -647,7 +634,12 @@ class SQLiteStore:
                     site_rows = [row for row in rows if row["site"] == site["id"]]
                     site["http"] = http_summary(site_rows, "site", site["id"])
                     site["charts"], site["current"] = charts(
-                        site_rows, site["replicas"], step, now, self.config.stale_seconds * 1000
+                        site_rows,
+                        site["replicas"],
+                        step,
+                        now,
+                        self.config.stale_seconds * 1000,
+                        since=since,
                     )
                     for replica in site["replicas"]:
                         values = [row for row in site_rows if row["replica"] == replica["id"]]
@@ -656,12 +648,17 @@ class SQLiteStore:
                             (row["observed_at_ms"] for row in values), default=None
                         )
                         _, replica["current"] = charts(
-                            values, [replica], step, now, self.config.stale_seconds * 1000
+                            values,
+                            [replica],
+                            step,
+                            now,
+                            self.config.stale_seconds * 1000,
+                            since=since,
                         )
                 combined, current = charts(
-                    rows, replicas, step, now, self.config.stale_seconds * 1000
+                    rows, replicas, step, now, self.config.stale_seconds * 1000, since=since
                 )
-                if absolute:
+                if historical:
                     for item in [
                         *sites,
                         *(replica for site in sites for replica in site["replicas"]),
@@ -671,7 +668,7 @@ class SQLiteStore:
                 return {
                     "range_start_ms": since,
                     "range_end_ms": until,
-                    "historical": absolute,
+                    "historical": historical,
                     "http": http_summary(rows, "all"),
                     "charts": combined,
                     "current": current,
@@ -679,13 +676,12 @@ class SQLiteStore:
                     "sample_seconds": self.config.sample_seconds,
                     "schema_version": 3,
                     "now_ms": now,
-                    "window_seconds": window,
+                    "window_seconds": (until - since) / 1000,
                     "demo": self.config.demo,
                     "sites": sites,
                     "history": sorted(history, key=lambda row: (row["at_ms"], row["site"])),
-                    "events": sorted(events, key=lambda row: row["occurred_at_ms"], reverse=True)[
-                        :100
-                    ],
+                    "events": events,
+                    "storage": self._storage_status(conn),
                     "queue_depth": self._queue.qsize(),
                     "site_options": [
                         dict(row)

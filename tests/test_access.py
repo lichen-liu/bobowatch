@@ -149,14 +149,29 @@ class AccessTests(unittest.TestCase):
     def test_short_overview_windows_and_five_minute_default(self):
         self.local()
         self.assertEqual(self.call("/api/overview")[1]["window_seconds"], 300)
-        for window in (30, 60, 300, 900, 1800, 3600, 21600, 43200, 86400, 604800, 2592000, 7776000):
+        for window in (
+            1,
+            30,
+            60,
+            120,
+            300,
+            900,
+            1800,
+            3600,
+            21600,
+            43200,
+            86400,
+            604800,
+            2592000,
+            7776000,
+        ):
             with self.subTest(window=window):
                 code, data = self.call("/api/overview", QUERY_STRING=f"window={window}")
                 self.assertEqual(code, 200)
                 self.assertEqual(data["window_seconds"], window)
                 self.assertGreaterEqual(data["bucket_seconds"], 5)
                 self.assertEqual(data["sample_seconds"], self.config.sample_seconds)
-        for window in ("0", "-1", "1", "120", "NaN"):
+        for window in ("0", "-1", "NaN"):
             with self.subTest(window=window):
                 self.assertEqual(
                     self.call("/api/overview", QUERY_STRING=f"window={window}")[0], 400

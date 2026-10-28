@@ -13,7 +13,7 @@ from .config import load, token_hash
 from .network import allowed_authority, local_ipv4
 from .protocol import MAX_BODY, Conflict, Invalid, validate
 from .ranges import overview_range
-from .storage import Busy, HistoryQueryTimeout
+from .storage import Busy
 
 log = logging.getLogger(__name__)
 ASSETS = {
@@ -88,8 +88,6 @@ class Application:
             status, body = 400, {"error": str(exc)}
         except Conflict as exc:
             status, body = 409, {"error": str(exc)}
-        except HistoryQueryTimeout as exc:
-            status, body = 503, {"error": str(exc), "code": "history_query_timeout"}
         except (Busy, sqlite3.OperationalError):
             status, body = 503, {"error": "Storage unavailable; retry with the same sequence"}
         except Exception:
@@ -182,6 +180,7 @@ class Application:
                 "window",
                 "start_ms",
                 "end_ms",
+                "bucket_ms",
             } or any(len(v) != 1 for v in query.values()):
                 raise Invalid("Invalid filter parameters")
             selected_range = overview_range(query)
@@ -191,7 +190,8 @@ class Application:
                 if query.get(key, [""])[0]
             }
             data = self.store.overview(filters, **selected_range)
-            data["storage"] = self.store.storage_status()
+            if "storage" not in data:
+                data["storage"] = self.store.storage_status()
             data["dashboard_access"] = access
             return 200, data, "application/json"
         if method != "POST":

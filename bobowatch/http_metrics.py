@@ -115,21 +115,9 @@ def load_http(conn, rows):
             by_id[route["snapshot_id"]]["routes"].append(dict(route))
 
 
-def endpoint_candidates(routes):
-    """Keep the leaders in each investigation, including quiet failing routes."""
-    active = [route for route in routes if route["requests"]]
-    candidates = {}
-    for score in (
-        lambda r: r["requests"],
-        lambda r: r["errors"],
-        lambda r: r["errors"] / r["requests"],
-        lambda r: r["duration_us"] / r["requests"],
-        lambda r: r["duration_us"],
-    ):
-        ranked = sorted(active, key=lambda r: (-score(r), -r["requests"], r["site"], r["route"]))
-        for route in ranked[:20]:
-            candidates[route["site"], route["route"]] = route
-    return sorted(candidates.values(), key=lambda r: (-r["requests"], r["site"], r["route"]))
+def endpoint_totals(routes):
+    """Return every recorded template, including idle, quiet or failing routes."""
+    return sorted(routes, key=lambda r: (-r["requests"], r["site"], r["route"]))
 
 
 def summary(rows, *, include_routes=True):
@@ -177,8 +165,8 @@ def summary(rows, *, include_routes=True):
         "bytes_received": received,
         "mean_response_bytes": sent / sized if sized else None,
         "mean_request_bytes": received / sized if sized else None,
-        "routes": endpoint_candidates(routes.values()),
-        "route_count": sum(bool(route["requests"]) for route in routes.values()),
+        "routes": endpoint_totals(routes.values()),
+        "route_count": len(routes),
         "snapshot_count": sum(row.get("snapshot_count", 1) for row in rows),
     }
 
@@ -193,18 +181,22 @@ def observation_key(row):
     )
 
 
-def charts(rows, replicas, step, now, stale_ms):
+def charts(rows, replicas, step, now, stale_ms, *, since=None):
     cells = {}
     for row in rows:
-        cell = cells.setdefault(row["observed_at_ms"] // step * step, [])
+        at = row["observed_at_ms"] // step * step
+        if since is not None:
+            at = max(at, since)
+        cell = cells.setdefault(at, [])
         cell.append(row)
     result = []
+    expected = {replica["id"] for replica in replicas if not replica.get("retired")}
     for at, members in sorted(cells.items()):
         metrics = summary(members, include_routes=False)
         by_replica = {}
         for row in members:
             by_replica.setdefault(row["replica"], []).append(row)
-        partial = len(by_replica) < len(replicas) or any(
+        partial = not expected <= by_replica.keys() or any(
             row["partial"] or row["skewed"] for row in members
         )
         rates = []
@@ -265,6 +257,7 @@ def charts(rows, replicas, step, now, stale_ms):
             default=None,
         )
         for replica in replicas
+        if not replica.get("retired")
     ]
     latest = [row.get("latest", row) if row is not None else None for row in latest]
     live = bool(latest) and all(

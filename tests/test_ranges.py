@@ -11,8 +11,19 @@ class RangeTests(unittest.TestCase):
         self.assertEqual(overview_range({}), {"window": 300})
         for seconds in WINDOWS:
             self.assertEqual(overview_range({"window": [str(seconds)]}), {"window": seconds})
-        with self.assertRaises(Invalid):
-            overview_range({"window": ["120"]})
+        for seconds in (120, 10**12):
+            self.assertEqual(overview_range({"window": [str(seconds)]}), {"window": seconds})
+        self.assertEqual(overview_range({"window": ["all"]}), {"window": "all"})
+        self.assertEqual(
+            overview_range({"window": ["all"], "bucket_ms": ["1"]}),
+            {"window": "all", "bucket_ms": 1},
+        )
+        for value in ("-1", "0", "1.5", "", "bad"):
+            with self.assertRaises(Invalid):
+                overview_range({"window": [value]})
+        for value in ("0", "-1", "1.5", "bad", str(2**63)):
+            with self.assertRaises(Invalid):
+                overview_range({"bucket_ms": [value]})
 
     def test_absolute_bounds_are_exact_and_mutually_exclusive(self):
         self.assertEqual(

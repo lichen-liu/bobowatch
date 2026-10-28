@@ -1,8 +1,8 @@
-"""Bounded SQL results for complete retained-history dashboard ranges.
+"""Complete SQL results for retained-history dashboard ranges.
 
 Raw observations stay in SQL. Large queries return per-replica/time-bucket
 counter sums, compatible histograms and the actual latest sample for gauges.
-Endpoint leaders are ranked after full-range aggregation, never from a sample.
+Every endpoint and observation contributes; grouping is presentation only.
 """
 
 from .protocol import BUCKETS_US
@@ -114,14 +114,13 @@ def aggregate_history(conn, replicas, since, until, step, *, exclusive_end=False
 
 
 def _endpoints(conn, selected, params):
-    # SQL ranks the complete range independently for combined/site/replica
-    # scopes. Pruning replica leaders before combining can lose global leaders.
-    ranked = conn.execute(
+    # Return every template independently for combined/site/replica scopes.
+    totals = conn.execute(
         f"""WITH selected AS ({selected}), per_replica AS (
             SELECT replica,site,t.route,SUM(t.delta_requests) AS requests,
                    SUM(t.delta_errors) AS errors,SUM(t.delta_duration_us) AS duration_us
             FROM selected JOIN route_totals t ON t.snapshot_id=selected.id
-            GROUP BY replica,site,t.route HAVING SUM(t.delta_requests)>0),
+            GROUP BY replica,site,t.route),
         scopes AS (
             SELECT 'replica' AS kind,replica AS scope,site,route,requests,errors,duration_us FROM per_replica
             UNION ALL
@@ -129,26 +128,16 @@ def _endpoints(conn, selected, params):
                 FROM per_replica GROUP BY site,route
             UNION ALL
             SELECT 'all','',site,route,SUM(requests),SUM(errors),SUM(duration_us)
-                FROM per_replica GROUP BY site,route),
-        ranked AS (
-            SELECT scopes.*,COUNT(*) OVER (PARTITION BY kind,scope) AS route_count,
-            ROW_NUMBER() OVER (PARTITION BY kind,scope ORDER BY requests DESC,site,route) AS traffic_rank,
-            ROW_NUMBER() OVER (PARTITION BY kind,scope ORDER BY errors DESC,requests DESC,site,route) AS error_rank,
-            ROW_NUMBER() OVER (PARTITION BY kind,scope ORDER BY 1.0*errors/requests DESC,requests DESC,site,route) AS rate_rank,
-            ROW_NUMBER() OVER (PARTITION BY kind,scope ORDER BY 1.0*duration_us/requests DESC,requests DESC,site,route) AS mean_rank,
-            ROW_NUMBER() OVER (PARTITION BY kind,scope ORDER BY duration_us DESC,requests DESC,site,route) AS work_rank
-            FROM scopes)
-        SELECT kind,scope,site,route,requests,errors,duration_us,route_count FROM ranked
-        WHERE traffic_rank<=20 OR error_rank<=20 OR rate_rank<=20 OR mean_rank<=20 OR work_rank<=20
+                FROM per_replica GROUP BY site,route)
+        SELECT kind,scope,site,route,requests,errors,duration_us FROM scopes
         ORDER BY kind,scope,requests DESC,site,route""",
         params,
     )
     result = {}
-    for row in ranked:
-        metrics = result.setdefault(
-            (row["kind"], row["scope"]), {"routes": [], "route_count": row["route_count"]}
-        )
+    for row in totals:
+        metrics = result.setdefault((row["kind"], row["scope"]), {"routes": [], "route_count": 0})
         metrics["routes"].append(
             {key: row[key] for key in ("site", "route", "requests", "errors", "duration_us")}
         )
+        metrics["route_count"] += 1
     return result
