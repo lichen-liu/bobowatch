@@ -128,9 +128,12 @@ observation totals in place of current live gauges; chart axes/tooltips include
 dates for longer spans.
 
 Only retained RAM history can be displayed. Selecting last month does not create
-missing records or recover history lost on reboot. The existing 4,000-snapshot
-query cap and two-second read budget still apply; the dashboard identifies capped,
-empty or partially retained results rather than claiming a complete period.
+missing records or recover history lost on reboot. Larger ranges aggregate all
+matching retained observations in SQL into roughly 180 chart buckets; totals and
+endpoint rankings cover the full range. The two-second read budget still applies.
+A timeout returns no partial result, preserves the previous view and leaves range
+controls available to narrow the query. Empty or partially retained periods remain
+identified separately.
 
 The overview API accepts either a supported `window` in seconds or both
 `start_ms` and `end_ms` as UTC Unix-millisecond integers, alongside existing scope
@@ -220,7 +223,9 @@ snapshots or fallback database. A fresh database has a new epoch, shown in the U
 the first producer snapshot establishes a baseline rather than counting all
 pre-epoch traffic. Later snapshots count deltas normally. Historical rows are
 bounded by capacity, not a promised number of days. Query results retain their
-existing 4,000-snapshot cap and visible truncation.
+two-second read budget and bounded chart/endpoint output. Larger queries use SQL
+aggregation across the full retained range; the former 4,000-snapshot threshold is
+now an internal choice of query strategy, rather than a history truncation limit.
 
 A bounded receipt cache retains the most recent 256 event IDs per replica in
 addition to retained events. Event deduplication beyond both horizons is not

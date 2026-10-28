@@ -115,12 +115,26 @@ Producer credentials cannot read the admin API and admin credentials cannot
 submit producer telemetry. `GET /health` is unauthenticated process liveness,
 not database readiness or site availability.
 
-`GET /api/overview` requires the admin credential. Optional filters are `project`,
-`site`, `host`, `replica`, and `window` (900, 1800, 3600, 21600 or 86400 seconds).
+`GET /api/overview` requires the admin credential unless trusted-LAN reads are
+enabled. Optional filters are `project`, `site`, `host`, `replica`, and a supported
+rolling `window`, or absolute `start_ms`/`end_ms` boundaries.
 The response contains inventory, replica freshness, historical aggregates, bounded
 chart bins and recent events. Counts select intervals ending within the window;
 edge intervals may overlap it. The UI states this rather than implying exact
-arbitrary-window counts. A 4,000-snapshot global cap is disclosed when reached.
+arbitrary-window counts. The complete retained range is included: up to 4,000
+observations use the raw path; larger queries aggregate counters, compatible
+histograms and status classes by replica, time bucket and producer version in SQL.
+The result stays near 180 chart buckets; observation counts remain the number of
+source snapshots, not the number of aggregate rows. Live gauges use the actual
+latest interval, including deterministic ordering when timestamps coincide across
+producer restarts. Endpoints are ranked after full-range aggregation independently
+for combined, site and replica scopes; per-replica pruning cannot lose a global
+leader. Existing time/run indexes are reused without a migration.
+
+The two-second read budget still applies. Interrupted history reads return HTTP
+503 with code `history_query_timeout`, rather than partial totals. The browser
+preserves the previous successful view and leaves range controls usable even when
+a saved range times out on first load.
 
 ## Failure and history semantics
 

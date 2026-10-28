@@ -218,8 +218,9 @@ run when upgrading its wire version; upgrade the core before its adapters.
 See [implemented runtime/storage architecture](docs/runtime-storage-design.md)
 and [operator commands](docs/runtime.md). WSGI wrappers, process/host sampling,
 public probes, job/freshness hooks, alert state and server-database support remain
-future work. History queries are capped at 4,000 snapshots per scope with visible
-truncation. Installed storage evicts old history at its quota. Legacy disk demos
+future work. Larger history queries aggregate the full retained range in SQL,
+with bounded charts/endpoint results and a two-second read budget. A timeout
+returns no partial totals. Installed storage evicts old history at its quota. Legacy disk demos
 remain unbounded unless explicitly configured. Use distinct replica slots for
 concurrent serving processes.
 

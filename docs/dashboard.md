@@ -73,12 +73,19 @@ The measurement strip reports status/endpoint coverage and body-size coverage.
 Old v1 producers can still supply request counts, server errors and latency
 without extended HTTP measurements. Their missing data is not filled with zero.
 
-Queries read at most 4,000 snapshots in the selected scope. When capped, charts,
-totals and endpoint rankings describe only the newest selected observations;
-the warning asks you to narrow the window. Installed history lives on the quota
+Queries include all retained observations in the selected scope and range. Larger
+ranges aggregate counters and histograms in SQL, keeping roughly 180 chart buckets
+without discarding early observations. Request/error totals, latency distributions,
+body measurements and endpoint rankings cover the same range. Live gauges still
+use the latest actual sample, rather than a bucket average.
+
+A two-second query budget protects ingestion and memory. A query that exceeds it
+returns a timeout with no partial result; the dashboard keeps the previous range
+and asks you to narrow the scope or dates. If a saved range times out on first
+load, the range controls remain available. Installed history lives on the quota
 limited RAM disk. Earlier data may have been evicted or lost on reboot. Selecting
-a longer range cannot restore it. **History & storage** shows usage, quota,
-epoch, oldest retained observation and eviction counts.
+a longer range cannot restore it. **History & storage** shows usage, quota, epoch,
+oldest retained observation and eviction counts.
 
 These views use existing SQL observations. They add no producer fields, storage
 migration, external service, frontend build or runtime dependency. Updating
