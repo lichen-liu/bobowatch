@@ -35,6 +35,7 @@ class HTTPMetricsTests(unittest.TestCase):
     def snapshot(self, elapsed):
         p = self.monitor.snapshot()
         p["elapsed_ms"] = elapsed
+        p["observed_at_ms"] = self.now  # Keep multi-snapshot assertions in the same chart bucket.
         return validate(p)
 
     def ingest(self, p):
