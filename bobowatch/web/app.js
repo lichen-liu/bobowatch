@@ -13,13 +13,15 @@ const state = {
   refreshSeconds: 300,
   customRange: null,
   routePage: 0,
+  eventPage: 0,
   appliedScope: {},
   hiddenSeries: new Map(),
 };
 let timer;
 const preferenceKey = "bobowatch.dashboard.preferences.v1";
 const ranges = BoboWatchRanges;
-const timeWindows = new Set([...ranges.rolling, ...ranges.calendar, "custom"]);
+const timeWindows = new Set([...ranges.rolling, ...ranges.calendar, "custom", "all"]);
+const chartDetails = new Set(["auto", "1", "1000", "15000", "60000", "300000", "3600000", "86400000"]);
 const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "Local time";
 const refreshIntervals = new Set(["0", "30", "60", "300"]);
 function restorePreferences() {
@@ -35,6 +37,7 @@ function restorePreferences() {
       $("auto-refresh").value = saved.refresh;
     if (["rate", "count"].includes(saved?.traffic)) $("traffic-view").value = saved.traffic;
     if (["rate", "count"].includes(saved?.errors)) $("error-view").value = saved.errors;
+    if (chartDetails.has(saved?.detail)) $("chart-detail").value = saved.detail;
   } catch {
     // Storage may be unavailable or contain invalid data. Keep the defaults.
   }
@@ -53,6 +56,7 @@ function savePreferences() {
         },
         traffic: $("traffic-view").value,
         errors: $("error-view").value,
+        detail: $("chart-detail").value,
       }),
     );
   } catch {
@@ -229,14 +233,15 @@ function lineChart(id, title, series, format) {
   const points = state.data.charts,
     start = state.data.range_start_ms ?? state.data.now_ms - state.data.window_seconds * 1000,
     end = state.data.range_end_ms ?? state.data.now_ms;
+  const valueOf = (line, point) => point.partial && !line.observed ? null : line.get(point);
   const all = shown
     .flatMap((line) =>
       (line.points || points).map((point) =>
-        point.partial ? null : line.get(point),
+        valueOf(line, point),
       ),
     )
     .filter((value) => value !== null && Number.isFinite(value));
-  const upper = boundScale(Math.max(0, ...all) * 1.12),
+  const upper = boundScale(all.reduce((max, value) => Math.max(max, value), 0) * 1.12),
     left = 42,
     right = width - 12,
     top = 14,
@@ -294,8 +299,8 @@ function lineChart(id, title, series, format) {
       isolated = null;
     };
     for (const point of line.points || points) {
-      const value = line.get(point);
-      if (point.partial || value === null || !Number.isFinite(value)) {
+      const value = valueOf(line, point);
+      if (value === null || !Number.isFinite(value)) {
         markIsolated();
         active = false;
         previous = null;
@@ -359,11 +364,15 @@ function lineChart(id, title, series, format) {
       at = point.at_ms;
     crosshair.setAttribute("d", `M${x(at)} ${top}V${bottom}`);
     tooltip.replaceChildren(
-      el("strong", (state.data.window_seconds > 86400 ? rangeStamp(at) : detailClock(at)) + (point.partial ? " · partial" : "")),
+      el("strong", (state.data.window_seconds > 86400 ? rangeStamp(at) : detailClock(at)) +
+        (state.data.bucket_seconds < 1 ? `.${String(at % 1000).padStart(3, "0")}` : "") +
+        (point.partial ? " · partial observations" : "")),
     );
     shown.forEach((line, i) => {
-      const sample = (line.points || points).find((p) => p.at_ms === at),
-        value = sample && !sample.partial ? line.get(sample) : null;
+      const source = line.points || points,
+        candidate = source[BoboWatchMetrics.nearestIndex(source, at)],
+        sample = candidate?.at_ms === at ? candidate : null,
+        value = sample ? valueOf(line, sample) : null;
       const row = append(
         el("div"),
         el("span", line.name),
@@ -388,15 +397,7 @@ function lineChart(id, title, series, format) {
         ((((event.clientX - rect.left) / rect.width) * width - left) /
           (right - left)) *
           (end - start);
-    let index = 0,
-      best = Infinity;
-    points.forEach((p, i) => {
-      if (Math.abs(p.at_ms - at) < best) {
-        index = i;
-        best = Math.abs(p.at_ms - at);
-      }
-    });
-    inspect(index);
+    inspect(BoboWatchMetrics.nearestIndex(points, at));
   });
   svg.addEventListener("pointerleave", () => {
     tooltip.hidden = true;
@@ -609,14 +610,12 @@ function routeTable() {
   const selection = BoboWatchMetrics.endpoints(routes, {
     query: $("route-search").value, sort: $("route-sort").value,
     minimum: Number($("route-minimum").value), page: state.routePage,
+    size: $("route-page-size").value,
   });
   state.routePage = selection.page;
-  const candidateCount = state.data.http.route_count;
-  $("route-coverage").textContent = candidateCount > routes.length
-    ? `${number(routes.length)} of ${number(candidateCount)} observed endpoints: the top 20 for each ranking. Narrow the site or time window to find more.`
-    : `${number(candidateCount)} observed endpoints · ${percent(state.data.http.http_requests, state.data.http.requests)} request coverage. Totals include recorded intervals only.`;
+  $("route-coverage").textContent = `${number(routes.length)} endpoint templates · all matching templates loaded · ${percent(state.data.http.http_requests, state.data.http.requests)} request coverage.`;
   $("route-count").textContent = selection.total
-    ? `${selection.page * 10 + 1}–${Math.min((selection.page + 1) * 10, selection.total)} of ${selection.total} matches`
+    ? `${selection.first}–${selection.last} of ${selection.total} matches`
     : "0 matches";
   $("route-previous").disabled = selection.page === 0;
   $("route-next").disabled = selection.page >= selection.pages - 1;
@@ -631,6 +630,7 @@ function routeTable() {
     );
     return;
   }
+  const maximumRequests = routes.reduce((max, row) => Math.max(max, row.requests), 1);
   host.append(
     table(
       ["Endpoint / site", "Requests", "5xx", "5xx rate", "Mean time", "Total time"],
@@ -646,7 +646,7 @@ function routeTable() {
           );
           const bar = el("div", undefined, "route-bar"),
             fill = el("i");
-          fill.style.width = `${(route.requests / Math.max(1, ...routes.map((r) => r.requests))) * 100}%`;
+          fill.style.width = `${route.requests / maximumRequests * 100}%`;
           bar.append(fill);
           first.append(bar);
           return append(
@@ -656,12 +656,12 @@ function routeTable() {
             el("td", number(route.errors), route.errors ? "numeric error-number" : "numeric"),
             el(
               "td",
-              `${numeric((route.errors / route.requests) * 100)}%`,
+              percent(route.errors, route.requests),
               "numeric",
             ),
             el(
               "td",
-              `${numeric(route.duration_us / route.requests / 1000)} ms`,
+              route.requests ? `${numeric(route.duration_us / route.requests / 1000)} ms` : "—",
               "numeric",
             ),
             el("td", `${numeric(route.duration_us / 1e6, 2)} s`, "numeric"),
@@ -670,8 +670,29 @@ function routeTable() {
     ),
   );
 }
+function renderEvents() {
+  if (!state.data) return;
+  const selected = BoboWatchMetrics.events(state.data.events, {
+    query: $("event-search").value, severity: $("event-severity").value,
+    page: state.eventPage, size: $("event-page-size").value,
+  });
+  state.eventPage = selected.page;
+  $("event-coverage").textContent = `${number(state.data.events.length)} events loaded · full range`;
+  $("event-count").textContent = selected.total ? `${selected.first}–${selected.last} of ${number(selected.total)} matches` : "0 matches";
+  $("event-previous").disabled = selected.page === 0;
+  $("event-next").disabled = selected.page >= selected.pages - 1;
+  $("events").replaceChildren(...(selected.rows.length ? selected.rows.map(event => {
+    const stamp = el("time", rangeStamp(event.occurred_at_ms));
+    stamp.dateTime = new Date(event.occurred_at_ms).toISOString();
+    return append(el("div", undefined, "event"), stamp,
+      el("span", event.severity, `severity ${event.severity}`),
+      el("div", event.message, "message"),
+      el("span", `${event.site} / ${event.replica}`, "scope"));
+  }) : [el("p", state.data.events.length ? "No events match these filters." : "No operational events in this window.", "empty")]));
+}
 function siteCard(site) {
   const historical = state.data.historical;
+  const active = site.replicas.filter(r => !r.retired);
   const node = el("article", undefined, "site"),
     fresh = state.error
       ? 0
@@ -693,10 +714,11 @@ function siteCard(site) {
         state.error
           ? "Updates unavailable"
           : historical ? "Selected range"
-          : fresh === site.replicas.length
+          : !active.length ? "Retired site"
+          : fresh === active.length
             ? "Telemetry current"
-            : `${fresh}/${site.replicas.length} reporting`,
-        state.error || (!historical && fresh < site.replicas.length) ? "warning" : "",
+            : `${fresh}/${active.length} reporting`,
+        state.error || (!historical && fresh < active.length) ? "warning" : !active.length ? "neutral" : "",
       ),
     ),
   );
@@ -735,8 +757,9 @@ function siteCard(site) {
           stale: "Stale",
           waiting: "Waiting",
           skewed: "Clock skew",
+          retired: "Retired",
         }[replica.status];
-    const button = el("button", `${replica.id} ↗`, "replica-button");
+    const button = el("button", `${replica.id}${replica.retired ? " (retired)" : ""} ↗`, "replica-button");
     button.dataset.replica = replica.id;
     const identity = append(
       el("td"),
@@ -766,7 +789,7 @@ function siteCard(site) {
         el("td"),
         badge(
           status,
-          state.error || (!historical && replica.status !== "fresh") ? "warning" : "",
+          state.error || (!historical && !replica.retired && replica.status !== "fresh") ? "warning" : replica.retired ? "neutral" : "",
         ),
       ),
     );
@@ -791,6 +814,7 @@ function render() {
   const metrics = data.http,
     points = data.charts,
     replicas = data.sites.flatMap((site) => site.replicas),
+    active = replicas.filter(replica => !replica.retired),
     fresh = state.error
       ? 0
       : replicas.filter((r) => r.status === "fresh").length;
@@ -808,7 +832,7 @@ function render() {
       { id: "connection" },
     ),
   );
-  $("updated").textContent = `Updated ${detailClock(data.now_ms)}`;
+  $("updated").textContent = `As of ${detailClock(data.now_ms)}`;
   $("range-status").textContent = `${rangeStamp(data.range_start_ms)} → ${rangeStamp(data.range_end_ms)} · ${timezone}${data.historical ? " · Range totals; end excluded" : ""}`;
   $("clear").hidden = !state.replica;
   const inventories = {project: data.projects, site: data.site_options, host: data.hosts};
@@ -830,7 +854,7 @@ function render() {
       ? "Only retained history is shown; this range starts before the oldest available observation."
       : "";
   const issues = state.error ||
-    (coverage || (!data.historical && fresh < replicas.length
+    (coverage || (!data.historical && fresh < active.length
       ? "Some expected replicas have no current telemetry. Missing values stay unknown." : ""));
   $("notice").hidden = !issues;
   $("notice").textContent = issues;
@@ -868,7 +892,7 @@ function render() {
       data.historical ? "Observations" : "Requests in flight",
       data.historical ? number(metrics.snapshot_count) : state.error ? "—" : number(data.current.in_flight),
       data.historical ? "samples" : "active",
-      data.historical ? "Recorded in selected range" : `${fresh} / ${replicas.length} replicas reporting`,
+      data.historical ? "Recorded in selected range" : `${fresh} / ${active.length} active replicas reporting`,
       (p) => p.in_flight,
       colors.blue,
       "⇄",
@@ -908,12 +932,12 @@ function render() {
     : "No completed requests in this window. Latency, percentages and body averages remain unknown.";
   $("telemetry-status").textContent = state.error ? "Updates unavailable"
     : data.historical ? `${replicas.filter(r => r.http.snapshot_count).length}/${replicas.length} replicas recorded`
-    : `${fresh}/${replicas.length} replicas reporting`;
-  $("telemetry-status").className = `pill ${state.error || (!data.historical && fresh < replicas.length) ? "warning" : "neutral"}`;
+    : `${fresh}/${active.length} active replicas reporting`;
+  $("telemetry-status").className = `pill ${state.error || (!data.historical && fresh < active.length) ? "warning" : "neutral"}`;
   const trafficCounts = $("traffic-view").value === "count";
   $("traffic-title").textContent = trafficCounts ? "Request volume" : "Request rate";
   const traffic = [
-    { name: "All selected sites", color: colors.teal, get: (p) => trafficCounts ? p.requests : p.rps },
+    { name: "All selected sites", color: colors.teal, observed: trafficCounts, get: (p) => trafficCounts ? p.requests : p.rps },
   ];
   if (data.sites.length > 1)
     data.sites.forEach((site, i) =>
@@ -922,6 +946,7 @@ function render() {
         color: [colors.blue, colors.purple, colors.amber][i % 3],
         get: (p) => trafficCounts ? p.requests : p.rps,
         points: site.charts,
+        observed: trafficCounts,
       }),
     );
   lineChart("traffic-chart", trafficCounts ? "Requests per chart bucket" : "Request rate over time", traffic, (v, tick) =>
@@ -935,24 +960,28 @@ function render() {
     [
       {
         name: "p50",
+        observed: true,
         caption: latency(metrics.latency.p50),
         color: colors.teal,
         get: (p) => (pValue(p.p50) === null ? null : pValue(p.p50) / 1000),
       },
       {
         name: "p95",
+        observed: true,
         caption: latency(metrics.latency.p95),
         color: colors.blue,
         get: (p) => (pValue(p.p95) === null ? null : pValue(p.p95) / 1000),
       },
       {
         name: "p99",
+        observed: true,
         caption: latency(metrics.latency.p99),
         color: colors.purple,
         get: (p) => (pValue(p.p99) === null ? null : pValue(p.p99) / 1000),
       },
       {
         name: "Mean", caption: metrics.mean_ms === null ? "—" : `${numeric(metrics.mean_ms)} ms`,
+        observed: true,
         color: colors.amber, get: p => p.mean_ms === null ? null : p.mean_ms / 1000,
         format: v => `${numeric(v, 3)} s`,
       },
@@ -966,11 +995,13 @@ function render() {
     [
       {
         name: "4xx client errors",
+        observed: true,
         color: colors.amber,
         get: (p) => errorCounts ? p.client_errors : p.client_error_pct,
       },
       {
         name: "5xx server errors",
+        observed: true,
         color: colors.red,
         get: (p) => errorCounts ? p.errors : p.server_error_pct,
       },
@@ -978,11 +1009,11 @@ function render() {
     (v, tick) => errorCounts ? tick ? number(v) : `${number(v)} responses` : `${numeric(v, 1)}%`,
   );
   lineChart("slow-chart", "Share of completed requests over one second", [
-    {name: ">1 second", color: colors.purple, get: p => p.slow_request_pct},
+    {name: ">1 second", color: colors.purple, observed: true, get: p => p.slow_request_pct},
   ], v => `${numeric(v, 1)}%`);
   lineChart("payload-chart", "Mean body size among measured requests", [
-    {name: "Response body", color: colors.teal, get: p => p.mean_response_bytes === null ? null : p.mean_response_bytes / 1024},
-    {name: "Request body", color: colors.blue, get: p => p.mean_request_bytes === null ? null : p.mean_request_bytes / 1024},
+    {name: "Response body", color: colors.teal, observed: true, get: p => p.mean_response_bytes === null ? null : p.mean_response_bytes / 1024},
+    {name: "Request body", color: colors.blue, observed: true, get: p => p.mean_request_bytes === null ? null : p.mean_request_bytes / 1024},
   ], (v, tick) => tick ? numeric(v, 1) : `${numeric(v, 2)} KiB`);
   lineChart(
     "concurrency-chart",
@@ -1017,7 +1048,7 @@ function render() {
   $("replica-count").textContent =
     data.historical
       ? `${replicas.filter(replica => replica.http.snapshot_count).length} / ${replicas.length} with observations · select a replica to inspect`
-      : `${fresh} / ${replicas.length} reporting · select a replica to inspect`;
+      : `${fresh} / ${active.length} active reporting · select a replica to inspect`;
   $("sites").replaceChildren(
     ...(data.sites.length
       ? data.sites.map(siteCard)
@@ -1029,23 +1060,10 @@ function render() {
           ),
         ]),
   );
-  $("events").replaceChildren(
-    ...(data.events.length
-      ? data.events.slice(0, 12).map((event) => {
-          const stamp = el("time", clock(event.occurred_at_ms));
-          stamp.dateTime = new Date(event.occurred_at_ms).toISOString();
-          return append(
-            el("div", undefined, "event"),
-            stamp,
-            el("span", event.severity, `severity ${event.severity}`),
-            el("div", event.message, "message"),
-            el("span", `${event.site} / ${event.replica}`, "scope"),
-          );
-        })
-      : [el("p", "No operational events in this window.", "empty")]),
-  );
+  renderEvents();
+  $("export-view").disabled = false;
   $("data-meta").textContent =
-    `${numeric(data.bucket_seconds)}s chart buckets · partial intervals remain gaps`;
+    `${number(metrics.snapshot_count)} source observations · ${numeric(data.bucket_seconds, 3)}s chart groups · all matching records included. Partial counts are observed values; unavailable rates remain gaps.`;
 }
 async function refresh() {
   if (!state.token && !state.localAccess) return false;
@@ -1059,12 +1077,25 @@ async function refresh() {
   const session = state.session;
   const controller = new AbortController();
   state.controller = controller;
-  const timeout = setTimeout(() => controller.abort(), 6000);
+  const started = performance.now();
+  const progress = setInterval(() => {
+    $("query-status").textContent = `Reading all matching history… ${Math.floor((performance.now() - started) / 1000)}s elapsed`;
+  }, 5000);
+  $("query-status").textContent = "Reading all matching history…";
+  $("dashboard").setAttribute("aria-busy", "true");
+  if (!state.data && state.localAccess) {
+    $("login").hidden = true;
+    $("dashboard").hidden = false;
+    $("dashboard").classList.add("no-history");
+    $("logout").hidden = state.localAccess;
+    $("scope-label").textContent = "Loading selected range";
+  }
   try {
     const selected = ranges.resolve($("window").value, Date.now(), state.customRange);
     const query = new URLSearchParams(selected.absolute
       ? { start_ms: selected.start_ms, end_ms: selected.end_ms }
       : { window: selected.window });
+    if ($("chart-detail").value !== "auto") query.set("bucket_ms", $("chart-detail").value);
     const requestedScope = { replica: state.replica };
     for (const key of ["project", "site", "host"])
       if ($(key).value) {
@@ -1084,19 +1115,9 @@ async function refresh() {
       clearTimeout(timer);
       showLogin();
     }
-    if (!response.ok) {
-      const problem = await response.json().catch(() => null);
-      const error = new Error(
-        response.status === 401
-          ? "Admin token was not accepted."
-          : problem?.code === "history_query_timeout"
-            ? "This history query took too long. Narrow the time range or scope and retry." +
-              (state.data ? " Displaying the last successful range." : " No history has been loaded.")
-          : `Updates unavailable (${response.status}). Displayed history is not live.`,
-      );
-      error.historyTimeout = response.status === 503 && problem?.code === "history_query_timeout";
-      throw error;
-    }
+    if (!response.ok) throw new Error(response.status === 401
+      ? "Admin token was not accepted."
+      : `Updates unavailable (${response.status}). Displayed history is not live.`);
     const data = await response.json();
     if (session !== state.session) return false;
     state.data = data;
@@ -1122,10 +1143,10 @@ async function refresh() {
     if (session !== state.session) return false;
     state.error =
       error.name === "AbortError"
-        ? "Updates timed out. Displayed values are historical."
+        ? "This query was cancelled. Displayed values are from the last successful range."
         : error.message;
     if (state.data) render();
-    else if (error.historyTimeout) {
+    else if (state.token || state.localAccess) {
       $("login").hidden = true;
       $("dashboard").hidden = false;
       $("dashboard").classList.add("no-history");
@@ -1137,7 +1158,9 @@ async function refresh() {
     } else $("login-error").textContent = state.error;
     return false;
   } finally {
-    clearTimeout(timeout);
+    clearInterval(progress);
+    $("query-status").textContent = "";
+    $("dashboard").setAttribute("aria-busy", "false");
     state.busy = false;
     $("refresh").disabled = false;
     if (state.pending && (state.token || state.localAccess)) {
@@ -1161,7 +1184,6 @@ function showLogin() {
 }
 async function connect() {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 6000);
   $("connection").textContent = "Connecting";
   try {
     const response = await fetch("/api/access", { signal: controller.signal });
@@ -1181,8 +1203,6 @@ async function connect() {
     $("login-error").textContent = error.name === "AbortError"
       ? "Dashboard connection timed out. Reload to retry."
       : error.message;
-  } finally {
-    clearTimeout(timeout);
   }
 }
 $("login-form").addEventListener("submit", async (event) => {
@@ -1216,12 +1236,14 @@ $("logout").addEventListener("click", () => {
   $("connection").textContent = "Private dashboard";
   $("updated").textContent = "Not connected";
 });
-for (const id of ["project", "site", "host", "window"])
+for (const id of ["project", "site", "host", "window", "chart-detail"])
   $(id).addEventListener("change", () => {
     state.routePage = 0;
-    if (id !== "window") state.replica = "";
+    state.eventPage = 0;
+    if (["project", "site", "host"].includes(id)) state.replica = "";
     if (id === "project") $("site").value = "";
-    if (id === "window") { showCustomRange(); savePreferences(); }
+    if (id === "window") showCustomRange();
+    if (id === "window" || id === "chart-detail") savePreferences();
     refresh();
   });
 $("custom-range").addEventListener("submit", event => {
@@ -1251,6 +1273,22 @@ document.addEventListener("visibilitychange", () => {
     refresh();
 });
 $("refresh").addEventListener("click", refresh);
+$("export-view").addEventListener("click", () => {
+  if (!state.data) return;
+  const blob = new Blob([JSON.stringify({format: "bobowatch.overview.v1", exported_at_ms: Date.now(),
+    scope: state.appliedScope, overview: state.data}, null, 2)], {type: "application/json"});
+  const url = URL.createObjectURL(blob), link = el("a");
+  link.href = url;
+  link.download = `bobowatch-${new Date(state.data.range_end_ms).toISOString().replaceAll(":", "-")}.json`;
+  document.body.append(link); link.click(); link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
+for (const id of ["event-search", "event-severity", "event-page-size"])
+  $(id).addEventListener(id === "event-search" ? "input" : "change", () => {
+    state.eventPage = 0; renderEvents();
+  });
+for (const [id, delta] of [["event-previous", -1], ["event-next", 1]])
+  $(id).addEventListener("click", () => { state.eventPage += delta; renderEvents(); });
 $("clear").addEventListener("click", () => {
   state.replica = "";
   state.routePage = 0;
@@ -1266,7 +1304,7 @@ for (const id of ["traffic-view", "error-view"]) $(id).addEventListener("change"
   savePreferences();
   render();
 });
-for (const id of ["route-search", "route-sort", "route-minimum"])
+for (const id of ["route-search", "route-sort", "route-minimum", "route-page-size"])
   $(id).addEventListener(id === "route-search" ? "input" : "change", () => {
     state.routePage = 0;
     if (state.data) routeTable();

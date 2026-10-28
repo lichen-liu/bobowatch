@@ -5,6 +5,10 @@ const ranges = require('../bobowatch/web/ranges.js');
 const at = value => new Date(value).getTime();
 const now = at('2026-10-24T13:30:45-04:00');
 
+test('all retained history asks the server for the complete stored range', () => {
+  assert.deepEqual(ranges.resolve('all',now),{window:'all',absolute:false});
+});
+
 function bounds(preset, start, end, stamp=now) {
   const range = ranges.resolve(preset, stamp);
   assert.equal(range.start_ms, at(start));

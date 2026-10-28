@@ -15,6 +15,7 @@
     return { start_ms: start, end_ms: end, absolute: true };
   }
   function resolve(preset, now = Date.now(), custom = null) {
+    if (preset === "all") return {window: "all", absolute: false};
     if (rolling.has(preset)) return {
       start_ms: now - Number(preset) * 1000, end_ms: now,
       window: Number(preset), absolute: false,
