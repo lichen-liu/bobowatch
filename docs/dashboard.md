@@ -13,7 +13,7 @@ including during auto-refresh or reload. The end is excluded. The time range,
 refresh interval, chart detail and traffic/error chart modes are remembered in the browser;
 credentials remain in tab memory only. Hidden tabs pause polling.
 
-**All retained history** spans the oldest through the newest matching observation,
+**All retained history** spans the oldest through the newest matching metric snapshot or event,
 including retained records from retired replicas. Custom dates have no duration
 cap; the API also accepts any positive rolling window in seconds. **Chart detail**
 offers automatic grouping, fixed time groups and **Every timestamp**. Grouping

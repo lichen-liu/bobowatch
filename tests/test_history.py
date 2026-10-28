@@ -385,3 +385,30 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual(metrics["route_count"], 161)
         self.assertEqual(len(metrics["routes"]), 161)
         self.assertIn("/template-0-19", {r["route"] for r in metrics["routes"]})
+
+    def test_all_history_includes_events_outside_snapshot_time_bounds(self):
+        monitor = self.monitor()
+        monitor.record_request(0.1)
+        payload = self.payload(monitor, self.now - 10000, 15000)
+        payload["events"] = [
+            {
+                "id": "earlier-event",
+                "at_ms": self.now - 60000,
+                "severity": "info",
+                "message": "before first snapshot",
+            },
+            {
+                "id": "later-event",
+                "at_ms": self.now + 5000,
+                "severity": "info",
+                "message": "clock-skewed event",
+            },
+        ]
+        self.ingest([validate(payload)])
+        data = self.overview({"id": "flights-r01"}, window="all")
+        self.assertEqual(data["range_start_ms"], self.now - 60000)
+        self.assertEqual(data["range_end_ms"], self.now + 5001)
+        self.assertEqual(
+            {event["id"] for event in data["events"]}, {"earlier-event", "later-event"}
+        )
+        self.assertEqual(data["http"]["snapshot_count"], 1)

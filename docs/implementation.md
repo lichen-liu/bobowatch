@@ -132,7 +132,7 @@ are returned for combined, site and replica scopes, including idle templates.
 Events are complete for the selected range. Retired inventory/history remains
 queryable; retired replicas are excluded from live gauges and expected counts.
 
-`window=all` derives half-open boundaries from all retained matching observations.
+`window=all` derives half-open boundaries from all retained matching snapshots and events.
 Other positive integer windows have no duration maximum and start no earlier than
 the Unix epoch. Absolute bounds remain exact. Live gauges use the latest actual
 interval, with deterministic ordering for equal timestamps across producer restarts.

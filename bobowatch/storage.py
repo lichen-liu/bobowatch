@@ -554,10 +554,16 @@ class SQLiteStore:
                     ids = [r["id"] for r in replicas]
                     if all_history:
                         first, last = conn.execute(
-                            f"""SELECT MIN(n.observed_at_ms),MAX(n.observed_at_ms)
-                            FROM snapshots n JOIN runs u ON u.id=n.run_id
-                            WHERE u.replica_id IN ({placeholders})""",
-                            ids,
+                            f"""SELECT MIN(at_ms),MAX(at_ms) FROM (
+                                SELECT n.observed_at_ms AS at_ms FROM snapshots n
+                                JOIN runs u ON u.id=n.run_id
+                                WHERE u.replica_id IN ({placeholders})
+                                UNION ALL
+                                SELECT e.occurred_at_ms AS at_ms FROM events e
+                                JOIN runs u ON u.id=e.run_id
+                                WHERE u.replica_id IN ({placeholders})
+                            )""",
+                            (*ids, *ids),
                         ).fetchone()
                         since = first if first is not None else now
                         until = max(now + 1, last + 1) if last is not None else now + 1

@@ -122,6 +122,12 @@ const append = (parent, ...children) => {
   parent.append(...children);
   return parent;
 };
+function replaceAllChildren(parent, children) {
+  const fragment = document.createDocumentFragment();
+  for (const child of children) fragment.append(child);
+  parent.replaceChildren(fragment);
+  return parent;
+}
 const numeric = (value, digits = 1) =>
   value === null || value === undefined
     ? "—"
@@ -600,7 +606,7 @@ function table(headers, rows) {
     cell.setAttribute("scope", "col");
     head.append(cell);
   });
-  node.append(append(el("thead"), head), append(el("tbody"), ...rows));
+  node.append(append(el("thead"), head), replaceAllChildren(el("tbody"), rows));
   return node;
 }
 function routeTable() {
@@ -681,14 +687,14 @@ function renderEvents() {
   $("event-count").textContent = selected.total ? `${selected.first}–${selected.last} of ${number(selected.total)} matches` : "0 matches";
   $("event-previous").disabled = selected.page === 0;
   $("event-next").disabled = selected.page >= selected.pages - 1;
-  $("events").replaceChildren(...(selected.rows.length ? selected.rows.map(event => {
+  replaceAllChildren($("events"), selected.rows.length ? selected.rows.map(event => {
     const stamp = el("time", rangeStamp(event.occurred_at_ms));
     stamp.dateTime = new Date(event.occurred_at_ms).toISOString();
     return append(el("div", undefined, "event"), stamp,
       el("span", event.severity, `severity ${event.severity}`),
       el("div", event.message, "message"),
       el("span", `${event.site} / ${event.replica}`, "scope"));
-  }) : [el("p", state.data.events.length ? "No events match these filters." : "No operational events in this window.", "empty")]));
+  }) : [el("p", state.data.events.length ? "No events match these filters." : "No operational events in this window.", "empty")]);
 }
 function siteCard(site) {
   const historical = state.data.historical;
@@ -849,7 +855,7 @@ function render() {
     ),
   );
   const coverage = !metrics.snapshot_count && data.historical
-    ? "No retained observations in this range."
+    ? "No retained metric snapshots in this range."
     : storage?.oldest_at_ms > data.range_start_ms
       ? "Only retained history is shown; this range starts before the oldest available observation."
       : "";
