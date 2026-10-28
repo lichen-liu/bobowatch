@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from bobowatch import Monitor
 from bobowatch.config import initialize
-from bobowatch.http_metrics import endpoint_candidates
+from bobowatch.http_metrics import endpoint_totals
 from bobowatch.protocol import Conflict, Invalid, validate
 from bobowatch.storage import SQLiteStore
 
@@ -128,7 +128,7 @@ class HTTPMetricsTests(unittest.TestCase):
         self.assertIsNone(data["charts"][-1]["mean_request_bytes"])
         self.assertEqual(data["charts"][-1]["errors"], 1)
 
-    def test_endpoint_candidates_keep_quiet_failures_and_slow_routes_bounded(self):
+    def test_endpoint_totals_include_quiet_and_idle_routes_without_a_cap(self):
         busy = [
             {
                 "site": "one",
@@ -146,11 +146,12 @@ class HTTPMetricsTests(unittest.TestCase):
             "errors": 1,
             "duration_us": 2_000_000,
         }
-        candidates = endpoint_candidates([*busy, quiet])
+        candidates = endpoint_totals([*busy, quiet])
         self.assertIn(quiet, candidates)
-        self.assertLessEqual(len(candidates), 100)
-        self.assertEqual(candidates, endpoint_candidates([quiet, *reversed(busy)]))
-        self.assertEqual(endpoint_candidates([{**quiet, "requests": 0, "errors": 0}]), [])
+        self.assertEqual(len(candidates), 101)
+        self.assertEqual(candidates, endpoint_totals([quiet, *reversed(busy)]))
+        idle = {**quiet, "requests": 0, "errors": 0}
+        self.assertEqual(endpoint_totals([idle]), [idle])
 
     def test_unknown_body_sizes_cannot_report_phantom_throughput(self):
         self.monitor.record_request(0.1)

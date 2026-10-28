@@ -180,6 +180,7 @@ class Application:
                 "window",
                 "start_ms",
                 "end_ms",
+                "bucket_ms",
             } or any(len(v) != 1 for v in query.values()):
                 raise Invalid("Invalid filter parameters")
             selected_range = overview_range(query)
@@ -189,7 +190,8 @@ class Application:
                 if query.get(key, [""])[0]
             }
             data = self.store.overview(filters, **selected_range)
-            data["storage"] = self.store.storage_status()
+            if "storage" not in data:
+                data["storage"] = self.store.storage_status()
             data["dashboard_access"] = access
             return 200, data, "application/json"
         if method != "POST":

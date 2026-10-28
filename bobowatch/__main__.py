@@ -71,6 +71,7 @@ def serve(config, *, simulate=False):
                 port=config.port,
                 threads=4,
                 connection_limit=32,
+                # Idle connections only; queued/running queries have no deadline.
                 channel_timeout=10,
                 cleanup_interval=2,
                 max_request_header_size=8192,

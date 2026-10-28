@@ -35,7 +35,7 @@ required. LAN HTTP is unencrypted; use an encrypted transport for other networks
 `storage.Storage` is the boundary used by the HTTP API. `SQLiteStore` owns
 SQLite-specific parameter binding, migrations, indexes, backups and conflict
 handling. It has a bounded queue and one writer connection; dashboard reads use
-separate, short read transactions with a query deadline. The domain protocol has
+independent read transactions without query deadlines. The domain protocol has
 no SQL dialect or database credentials. No second backend is implemented.
 
 All snapshot state, cumulative-to-interval deltas, histogram buckets and events
@@ -115,12 +115,36 @@ Producer credentials cannot read the admin API and admin credentials cannot
 submit producer telemetry. `GET /health` is unauthenticated process liveness,
 not database readiness or site availability.
 
-`GET /api/overview` requires the admin credential. Optional filters are `project`,
-`site`, `host`, `replica`, and `window` (900, 1800, 3600, 21600 or 86400 seconds).
+`GET /api/overview` requires the admin credential unless trusted-LAN reads are
+enabled. Optional filters are `project`, `site`, `host`, `replica`, and a supported
+rolling `window`, or absolute `start_ms`/`end_ms` boundaries.
 The response contains inventory, replica freshness, historical aggregates, bounded
 chart bins and recent events. Counts select intervals ending within the window;
 edge intervals may overlap it. The UI states this rather than implying exact
-arbitrary-window counts. A 4,000-snapshot global cap is disclosed when reached.
+arbitrary-window counts. All retained matching observations are included, with
+no query row cap, top-endpoint selection, event cutoff or execution deadline.
+SQL aggregates counters, histograms and status classes by replica, timestamp group
+and producer version. Automatic chart detail produces roughly 180 groups; optional
+positive `bucket_ms` selects a fixed width (1 means every source timestamp).
+Grouping changes presentation, never the selected observations or totals.
+Observation counts describe source snapshots, not aggregate rows. All endpoints
+are returned for combined, site and replica scopes, including idle templates.
+Events are complete for the selected range. Retired inventory/history remains
+queryable; retired replicas are excluded from live gauges and expected counts.
+
+`window=all` derives half-open boundaries from all retained matching snapshots and events.
+Other positive integer windows have no duration maximum and start no earlier than
+the Unix epoch. Absolute bounds remain exact. Live gauges use the latest actual
+interval, with deterministic ordering for equal timestamps across producer restarts.
+Existing time/run indexes are reused without a migration.
+
+Overview reads have no progress-handler deadline, retry database lock contention
+without a fixed timeout, and read storage metadata in the same transaction rather
+than through the writer acknowledgement queue. The browser has no automatic
+query-abort timer. It shows progress, retains the previous successful view on a
+real failure, and keeps range controls usable. Pagination and search operate on
+complete endpoint/event arrays; All rows and a complete JSON view download are
+available. No new runtime dependency or producer protocol is required.
 
 ## Failure and history semantics
 
@@ -177,11 +201,10 @@ is visible for mixed v1/v2 data.
 The overview also returns weighted mean latency, counts/shares of requests over
 one second, measured body byte totals/means and per-bucket error counts. These
 are derived from the existing snapshot deltas without a schema or producer
-protocol change. Endpoint candidates are the union of the top 20 for traffic,
-error count, error rate, mean duration and total duration, with `route_count`
-describing the full number of observed site/route pairs before the 100-candidate
-bound. Chart aggregation skips route ranking. See [dashboard controls and metric
-definitions](dashboard.md) for measurement and retention limitations.
+protocol change. Every recorded endpoint template is returned for each scope;
+chart aggregation skips route calculations and uses separately aggregated full
+route totals. See [dashboard controls and metric definitions](dashboard.md) for
+measurement and retention semantics.
 
 A fresh **demo-only** runtime seeds 30 minutes of generated observations with
 fictional observation/receipt times. These are stored and queried in SQL, not

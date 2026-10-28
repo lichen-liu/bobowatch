@@ -128,13 +128,20 @@ observation totals in place of current live gauges; chart axes/tooltips include
 dates for longer spans.
 
 Only retained RAM history can be displayed. Selecting last month does not create
-missing records or recover history lost on reboot. The existing 4,000-snapshot
-query cap and two-second read budget still apply; the dashboard identifies capped,
-empty or partially retained results rather than claiming a complete period.
+missing records or recover history lost on reboot. Queries include all matching
+retained observations, endpoints and events without a row or time budget.
+**All retained history** uses the matching SQL history's full span. Chart detail
+can automatically group observations or show every source timestamp; all groups
+use complete counters and histograms. Every endpoint/event remains accessible
+through table pages or All rows, and Download JSON saves the complete queried
+view. A long query shows progress until it finishes. A real failure preserves the
+previous view and leaves controls available to retry.
 
 The overview API accepts either a supported `window` in seconds or both
 `start_ms` and `end_ms` as UTC Unix-millisecond integers, alongside existing scope
-filters. Absolute ranges are half-open and return their exact bounds. A small
+filters. `window=all` selects the retained span; other positive rolling seconds
+have no duration maximum. `bucket_ms` chooses chart detail; 1 keeps every source
+timestamp. Absolute ranges are half-open and return their exact bounds. A small
 30-second future tolerance accommodates browser/server clock skew; it does not
 create future observations. No SQL migration or new runtime dependency is needed.
 
@@ -220,7 +227,10 @@ snapshots or fallback database. A fresh database has a new epoch, shown in the U
 the first producer snapshot establishes a baseline rather than counting all
 pre-epoch traffic. Later snapshots count deltas normally. Historical rows are
 bounded by capacity, not a promised number of days. Query results retain their
-existing 4,000-snapshot cap and visible truncation.
+complete retained range without row, event, endpoint or query execution caps.
+Chart grouping is adjustable and preserves all matching observations. Dashboard
+queries use independent read connections and read metadata in the same SQL
+transaction, so ingestion acknowledgement timeouts do not abort a long view.
 
 A bounded receipt cache retains the most recent 256 event IDs per replica in
 addition to retained events. Event deduplication beyond both horizons is not

@@ -134,6 +134,7 @@
                   <option value="last-year">Last year</option>
                 </optgroup>
                 <option value="custom">Custom range…</option>
+                <option value="all">All retained history</option>
               </select></label
             >
             <label class="refresh-filter"
@@ -144,11 +145,23 @@
                 <option value="0">Off</option>
               </select></label
             >
+            <label class="detail-filter">Chart detail<select id="chart-detail">
+              <option value="auto">Automatic grouping</option>
+              <option value="1">Every timestamp</option>
+              <option value="1000">1 second</option>
+              <option value="15000">15 seconds</option>
+              <option value="60000">1 minute</option>
+              <option value="300000">5 minutes</option>
+              <option value="3600000">1 hour</option>
+              <option value="86400000">1 day</option>
+            </select></label>
             <button id="clear" hidden>Clear replica</button
             ><button id="refresh" class="refresh" title="Refresh now">
               ↻ <span>Refresh</span>
             </button>
+            <button id="export-view" disabled title="Download all queried totals, chart data, endpoints and events, regardless of table page">Download JSON</button>
           </section>
+          <p id="query-status" class="query-status" role="status"></p>
           <div id="scope-status" class="scope-status" aria-live="polite">
             <span id="scope-label">All projects</span>
             <button id="clear-scope" hidden>Clear scope</button>
@@ -298,7 +311,7 @@
                   <span class="eyebrow">WHERE THE WORK HAPPENS</span>
                   <h2>Endpoint explorer</h2>
                 </div>
-                <span class="chart-note">Bounded route templates</span>
+                <span class="chart-note">All recorded route templates</span>
               </div>
               <div class="endpoint-tools">
                 <label class="endpoint-search">Find endpoint or site
@@ -315,6 +328,7 @@
                 </label>
                 <label>Minimum requests
                   <select id="route-minimum">
+                    <option value="0" selected>0 · include idle</option>
                     <option value="1">1</option><option value="10">10</option>
                     <option value="100">100</option><option value="1000">1,000</option>
                   </select>
@@ -325,8 +339,9 @@
               <div id="route-table" class="table-scroll" tabindex="0" role="region" aria-label="Endpoint metrics"></div>
               <div class="table-pagination">
                 <span id="route-count" role="status"></span>
-                <button id="route-previous" aria-label="Previous endpoints">← Previous</button>
-                <button id="route-next" aria-label="Next endpoints">Next →</button>
+                <label class="page-size">Rows<select id="route-page-size"><option value="10">10</option><option value="25">25</option><option value="100">100</option><option value="all">All</option></select></label>
+                <button id="route-previous" aria-label="Previous endpoints" disabled>← Previous</button>
+                <button id="route-next" aria-label="Next endpoints" disabled>Next →</button>
               </div>
             </article>
             <article class="panel response-panel">
@@ -346,9 +361,18 @@
                 <span class="eyebrow">RECENT ACTIVITY</span>
                 <h2>Operational events</h2>
               </div>
-              <span class="chart-note">Newest 12 in scope</span>
+              <span id="event-coverage" class="chart-note"></span>
+            </div>
+            <div class="endpoint-tools event-tools">
+              <label class="endpoint-search">Find event, site or replica<input id="event-search" type="search" placeholder="Search all retained events" /></label>
+              <label>Severity<select id="event-severity"><option value="">All severities</option><option value="info">Info</option><option value="warning">Warning</option><option value="error">Error</option></select></label>
             </div>
             <div id="events"></div>
+            <div class="table-pagination">
+              <span id="event-count" role="status"></span>
+              <label class="page-size">Rows<select id="event-page-size"><option value="25">25</option><option value="100">100</option><option value="all">All</option></select></label>
+              <button id="event-previous" disabled>← Previous</button><button id="event-next" disabled>Next →</button>
+            </div>
           </section>
           <footer>
             <span><strong>BoboWatch</strong> · On demand, by design.</span

@@ -21,7 +21,8 @@ flowchart LR
 ```
 
 One process, four Waitress request threads, one SQL writer thread and a 128-task
-writer queue. Reads use independent connections with a two-second query deadline.
+writer queue. Dashboard reads use independent connections without query deadlines
+or row caps; storage metadata is read in the same transaction.
 Waitress is the only third-party core dependency. There is no broker, ORM,
 collector suite or external SQL server. Backend-specific quotas/reclamation stay
 inside SQLiteStore and retention.py; a future SQL backend still needs a driver,

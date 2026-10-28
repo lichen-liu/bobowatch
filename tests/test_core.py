@@ -183,7 +183,16 @@ class CoreTests(unittest.TestCase):
             SQLiteStore(replace(self.config, replicas=()))
         retired = tuple(dict(r, retired=True) for r in self.config.replicas)
         self.store = SQLiteStore(replace(self.config, replicas=retired))
-        self.assertEqual(self.store.overview({}, 3600)["sites"], [])
+        data = self.store.overview({}, 3600)
+        self.assertEqual(len(data["sites"]), 2)
+        self.assertTrue(
+            all(
+                r["retired"] and r["status"] == "retired"
+                for site in data["sites"]
+                for r in site["replicas"]
+            )
+        )
+        self.assertIsNone(data["current"]["rps"])
         with self.assertRaises(Conflict):
             self.ingest(self.payload())
 
