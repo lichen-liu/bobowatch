@@ -174,6 +174,15 @@ Top endpoints remain grouped by site and registered route, so identically named
 paths from different projects do not lose their origin. Extended metric coverage
 is visible for mixed v1/v2 data.
 
+The overview also returns weighted mean latency, counts/shares of requests over
+one second, measured body byte totals/means and per-bucket error counts. These
+are derived from the existing snapshot deltas without a schema or producer
+protocol change. Endpoint candidates are the union of the top 20 for traffic,
+error count, error rate, mean duration and total duration, with `route_count`
+describing the full number of observed site/route pairs before the 100-candidate
+bound. Chart aggregation skips route ranking. See [dashboard controls and metric
+definitions](dashboard.md) for measurement and retention limitations.
+
 A fresh **demo-only** runtime seeds 30 minutes of generated observations with
 fictional observation/receipt times. These are stored and queried in SQL, not
 invented in browser chart code. Existing runtimes are not backfilled. The import
