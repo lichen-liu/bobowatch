@@ -17,6 +17,7 @@ from contextlib import closing
 from pathlib import Path
 from typing import Protocol
 
+from .history import aggregate_history
 from .http_metrics import charts, load_http, store_http, summary
 from .protocol import BUCKETS_US, Conflict, Invalid, percentile
 from .ramdisk import validate_database
@@ -26,6 +27,14 @@ from .retention import admit, footprint, maintain
 
 class Busy(RuntimeError):
     pass
+
+
+class HistoryQueryTimeout(Busy):
+    pass
+
+
+RAW_HISTORY_LIMIT = 4000
+HISTORY_QUERY_SECONDS = 2
 
 
 class Storage(Protocol):
@@ -461,6 +470,16 @@ class SQLiteStore:
         return {"sequence": p["sequence"], "duplicate": False}
 
     def overview(self, filters, window=300, *, now_ms=None, start_ms=None, end_ms=None):
+        try:
+            return self._overview(filters, window, now_ms=now_ms, start_ms=start_ms, end_ms=end_ms)
+        except sqlite3.OperationalError as error:
+            if getattr(error, "sqlite_errorcode", None) == sqlite3.SQLITE_INTERRUPT:
+                raise HistoryQueryTimeout(
+                    "This history query exceeded its time budget. Narrow the time range or scope and retry."
+                ) from None
+            raise
+
+    def _overview(self, filters, window=300, *, now_ms=None, start_ms=None, end_ms=None):
         now = int(time.time() * 1000) if now_ms is None else now_ms
         absolute = start_ms is not None or end_ms is not None
         if absolute:
@@ -472,7 +491,7 @@ class SQLiteStore:
         end_operator = "<" if absolute else "<="
         with closing(self._connect()) as conn:
             conn.execute("PRAGMA query_only=ON")
-            deadline = time.monotonic() + 2
+            deadline = time.monotonic() + HISTORY_QUERY_SECONDS
             conn.set_progress_handler(lambda: int(time.monotonic() > deadline), 1000)
             # One short read transaction gives all panels a consistent view.
             with conn:
@@ -492,6 +511,8 @@ class SQLiteStore:
                     if all(not value or str(r.get(key)) == value for key, value in filters.items())
                 ]
                 replicas, rows, events = [], [], []
+                endpoints = None
+                step = max(5_000, (until - since) // 180)
                 for replica in inventory:
                     latest = conn.execute(
                         """SELECT n.*,u.revision FROM snapshots n
@@ -520,32 +541,38 @@ class SQLiteStore:
                     placeholders = ",".join("?" for _ in replicas)
                     ids = [r["id"] for r in replicas]
                     selected = conn.execute(
-                        f"""SELECT n.*,u.replica_id,r.site_id FROM snapshots n
+                        f"""SELECT n.*,u.replica_id,r.site_id,u.started_at_ms AS run_started_at_ms FROM snapshots n
                         JOIN runs u ON u.id=n.run_id JOIN replicas r ON r.id=u.replica_id
                         WHERE u.replica_id IN ({placeholders}) AND n.observed_at_ms >= ? AND n.observed_at_ms {end_operator} ?
-                        ORDER BY n.observed_at_ms DESC LIMIT 4001""",
-                        (*ids, since, until),
+                        ORDER BY n.observed_at_ms DESC LIMIT ?""",
+                        (*ids, since, until, RAW_HISTORY_LIMIT + 1),
                     ).fetchall()
-                    truncated = len(selected) > 4000
-                    rows = [
-                        {
-                            **dict(row),
-                            "replica": row["replica_id"],
-                            "site": row["site_id"],
-                            "buckets": [0] * (len(BUCKETS_US) + 1),
-                        }
-                        for row in selected[:4000]
-                    ]
-                    by_id = {row["id"]: row for row in rows}
-                    for offset in range(0, len(rows), 200):
-                        keys = [row["id"] for row in rows[offset : offset + 200]]
-                        marks = ",".join("?" for _ in keys)
-                        for bucket in conn.execute(
-                            f"SELECT * FROM histogram_buckets WHERE snapshot_id IN ({marks})", keys
-                        ):
-                            by_id[bucket["snapshot_id"]]["buckets"][bucket["bucket_index"]] = (
-                                bucket["delta"]
-                            )
+                    if len(selected) > RAW_HISTORY_LIMIT:
+                        del selected
+                        rows, endpoints = aggregate_history(
+                            conn, ids, since, until, step, exclusive_end=absolute
+                        )
+                    else:
+                        rows = [
+                            {
+                                **dict(row),
+                                "replica": row["replica_id"],
+                                "site": row["site_id"],
+                                "buckets": [0] * (len(BUCKETS_US) + 1),
+                            }
+                            for row in selected
+                        ]
+                        by_id = {row["id"]: row for row in rows}
+                        for offset in range(0, len(rows), 200):
+                            keys = [row["id"] for row in rows[offset : offset + 200]]
+                            marks = ",".join("?" for _ in keys)
+                            for bucket in conn.execute(
+                                f"SELECT * FROM histogram_buckets WHERE snapshot_id IN ({marks})",
+                                keys,
+                            ):
+                                by_id[bucket["snapshot_id"]]["buckets"][bucket["bucket_index"]] = (
+                                    bucket["delta"]
+                                )
                     events = [
                         dict(row)
                         for row in conn.execute(
@@ -558,10 +585,19 @@ class SQLiteStore:
                         )
                     ]
                     for replica in replicas:
-                        replica["history_truncated"] = truncated
-                load_http(conn, rows)
+                        replica["history_truncated"] = False
+                if endpoints is None:
+                    load_http(conn, rows)
+
+                def http_summary(values, kind, scope=""):
+                    metrics = summary(values, include_routes=endpoints is None)
+                    if endpoints is not None:
+                        metrics.update(
+                            endpoints.get((kind, scope), {"routes": [], "route_count": 0})
+                        )
+                    return metrics
+
                 # Bounded output: bin recorded deltas, never average replica percentiles.
-                step = max(5_000, (until - since) // 180)
                 bins = {}
                 for row in rows:
                     time_bin = row["observed_at_ms"] // step * step
@@ -599,7 +635,7 @@ class SQLiteStore:
                             "project_title": members[0]["project_title"],
                             "environment": members[0]["environment"],
                             "replicas": members,
-                            "snapshots": len(selected),
+                            "snapshots": sum(r.get("snapshot_count", 1) for r in selected),
                             "requests": sum(r["delta_requests"] for r in selected),
                             "errors": sum(r["delta_errors"] for r in selected),
                             "p95": percentile(buckets),
@@ -609,13 +645,13 @@ class SQLiteStore:
                     )
                 for site in sites:
                     site_rows = [row for row in rows if row["site"] == site["id"]]
-                    site["http"] = summary(site_rows)
+                    site["http"] = http_summary(site_rows, "site", site["id"])
                     site["charts"], site["current"] = charts(
                         site_rows, site["replicas"], step, now, self.config.stale_seconds * 1000
                     )
                     for replica in site["replicas"]:
                         values = [row for row in site_rows if row["replica"] == replica["id"]]
-                        replica["http"] = summary(values)
+                        replica["http"] = http_summary(values, "replica", replica["id"])
                         replica["range_observed_at_ms"] = max(
                             (row["observed_at_ms"] for row in values), default=None
                         )
@@ -636,7 +672,7 @@ class SQLiteStore:
                     "range_start_ms": since,
                     "range_end_ms": until,
                     "historical": absolute,
-                    "http": summary(rows),
+                    "http": http_summary(rows, "all"),
                     "charts": combined,
                     "current": current,
                     "bucket_seconds": step / 1000,
@@ -646,7 +682,7 @@ class SQLiteStore:
                     "window_seconds": window,
                     "demo": self.config.demo,
                     "sites": sites,
-                    "history": sorted(history, key=lambda row: row["at_ms"]),
+                    "history": sorted(history, key=lambda row: (row["at_ms"], row["site"])),
                     "events": sorted(events, key=lambda row: row["occurred_at_ms"], reverse=True)[
                         :100
                     ],

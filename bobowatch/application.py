@@ -13,7 +13,7 @@ from .config import load, token_hash
 from .network import allowed_authority, local_ipv4
 from .protocol import MAX_BODY, Conflict, Invalid, validate
 from .ranges import overview_range
-from .storage import Busy
+from .storage import Busy, HistoryQueryTimeout
 
 log = logging.getLogger(__name__)
 ASSETS = {
@@ -88,6 +88,8 @@ class Application:
             status, body = 400, {"error": str(exc)}
         except Conflict as exc:
             status, body = 409, {"error": str(exc)}
+        except HistoryQueryTimeout as exc:
+            status, body = 503, {"error": str(exc), "code": "history_query_timeout"}
         except (Busy, sqlite3.OperationalError):
             status, body = 503, {"error": "Storage unavailable; retry with the same sequence"}
         except Exception:

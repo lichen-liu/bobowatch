@@ -179,8 +179,18 @@ def summary(rows, *, include_routes=True):
         "mean_request_bytes": received / sized if sized else None,
         "routes": endpoint_candidates(routes.values()),
         "route_count": sum(bool(route["requests"]) for route in routes.values()),
-        "snapshot_count": len(rows),
+        "snapshot_count": sum(row.get("snapshot_count", 1) for row in rows),
     }
+
+
+def observation_key(row):
+    latest = row.get("latest", row)
+    return (
+        latest["observed_at_ms"],
+        latest["received_at_ms"],
+        latest.get("run_started_at_ms", 0),
+        latest.get("sequence", 0),
+    )
 
 
 def charts(rows, replicas, step, now, stale_ms):
@@ -205,7 +215,7 @@ def charts(rows, replicas, step, now, stale_ms):
         sent = received = 0.0
         all_sized = True
         for values in by_replica.values():
-            last = max(values, key=lambda row: row["observed_at_ms"])
+            last = max(values, key=observation_key)
             inflight.append(last["http"]["in_flight"] if last["http"] else None)
             elapsed = sum(row["interval_ms"] for row in values) / 1000
             sent += sum(row["http"]["delta_bytes_sent"] for row in values if row["http"]) / elapsed
@@ -251,11 +261,12 @@ def charts(rows, replicas, step, now, stale_ms):
     latest = [
         max(
             (row for row in rows if row["replica"] == replica["id"]),
-            key=lambda row: row["observed_at_ms"],
+            key=observation_key,
             default=None,
         )
         for replica in replicas
     ]
+    latest = [row.get("latest", row) if row is not None else None for row in latest]
     live = bool(latest) and all(
         row
         and not row["partial"]
