@@ -1276,6 +1276,10 @@ code {
   border: 0;
 }
 .mobile-nav { display: none; }
+.no-history #summary, .no-history #secondary-summary, .no-history .coverage-panel,
+.no-history #performance, .no-history #replicas, .no-history #sites,
+.no-history .detail-grid, .no-history #event-section, .no-history .storage-details,
+.no-history .mobile-nav { display: none; }
 .scope-status {
   display: flex;
   align-items: center;

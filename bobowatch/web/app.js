@@ -778,7 +778,7 @@ function siteCard(site) {
     ),
     el(
       "p",
-      `${number(site.requests)} requests observed · ${site.history_truncated ? "History capped; narrow the window" : site.partial ? "Partial intervals included" : "Selected time window"}`,
+      `${number(site.requests)} requests observed · ${site.partial ? "Partial intervals included" : "Selected time window"}`,
       "site-coverage",
     ),
   );
@@ -787,6 +787,7 @@ function siteCard(site) {
 function render() {
   const data = state.data;
   if (!data) return;
+  $("dashboard").classList.remove("no-history");
   const metrics = data.http,
     points = data.charts,
     replicas = data.sites.flatMap((site) => site.replicas),
@@ -829,10 +830,8 @@ function render() {
       ? "Only retained history is shown; this range starts before the oldest available observation."
       : "";
   const issues = state.error ||
-    (data.sites.some(site => site.history_truncated)
-      ? "This window exceeds the 4,000-snapshot query budget. Charts and totals cover only the newest observations; narrow the window."
-      : coverage || (!data.historical && fresh < replicas.length
-        ? "Some expected replicas have no current telemetry. Missing values stay unknown." : ""));
+    (coverage || (!data.historical && fresh < replicas.length
+      ? "Some expected replicas have no current telemetry. Missing values stay unknown." : ""));
   $("notice").hidden = !issues;
   $("notice").textContent = issues;
   $("summary").replaceChildren(
@@ -1085,12 +1084,19 @@ async function refresh() {
       clearTimeout(timer);
       showLogin();
     }
-    if (!response.ok)
-      throw new Error(
+    if (!response.ok) {
+      const problem = await response.json().catch(() => null);
+      const error = new Error(
         response.status === 401
           ? "Admin token was not accepted."
+          : problem?.code === "history_query_timeout"
+            ? "This history query took too long. Narrow the time range or scope and retry." +
+              (state.data ? " Displaying the last successful range." : " No history has been loaded.")
           : `Updates unavailable (${response.status}). Displayed history is not live.`,
       );
+      error.historyTimeout = response.status === 503 && problem?.code === "history_query_timeout";
+      throw error;
+    }
     const data = await response.json();
     if (session !== state.session) return false;
     state.data = data;
@@ -1119,7 +1125,16 @@ async function refresh() {
         ? "Updates timed out. Displayed values are historical."
         : error.message;
     if (state.data) render();
-    else $("login-error").textContent = state.error;
+    else if (error.historyTimeout) {
+      $("login").hidden = true;
+      $("dashboard").hidden = false;
+      $("dashboard").classList.add("no-history");
+      $("logout").hidden = state.localAccess;
+      $("connection").textContent = "Updates unavailable";
+      $("notice").textContent = state.error;
+      $("notice").hidden = false;
+      $("scope-label").textContent = "No range loaded";
+    } else $("login-error").textContent = state.error;
     return false;
   } finally {
     clearTimeout(timeout);
@@ -1178,7 +1193,7 @@ $("login-form").addEventListener("submit", async (event) => {
   const button = $("login-form").querySelector("button");
   button.disabled = true;
   try {
-    if (!(await refresh()) && !state.data) {
+    if (!(await refresh()) && !state.data && $("dashboard").hidden) {
       state.token = "";
       scheduleRefresh();
     }
