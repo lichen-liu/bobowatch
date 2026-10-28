@@ -42,7 +42,7 @@ function restorePreferences() {
     // Storage may be unavailable or contain invalid data. Keep the defaults.
   }
   state.refreshSeconds = Number($("auto-refresh").value);
-  showCustomRange();
+  syncTimeControls();
 }
 function savePreferences() {
   try {
@@ -63,20 +63,156 @@ function savePreferences() {
     // The dashboard still works when browser storage is unavailable.
   }
 }
-function showCustomRange() {
-  $("custom-range").hidden = $("window").value !== "custom";
-  $("range-error").hidden = true;
-  $("range-zone").textContent = `Times in ${timezone}. The end time is excluded.`;
-  if ($("window").value !== "custom") return;
-  if (!state.customRange) {
-    const now = Date.now();
-    state.customRange = {
-      start_ms: state.data?.range_start_ms ?? now - 300000,
-      end_ms: state.data?.range_end_ms ?? now,
-    };
+function syncTimeControls() {
+  const selected = $("window").selectedOptions[0];
+  let label = selected.textContent;
+  if (selected.value === "custom" && state.customRange) {
+    const stamp = ms => new Date(ms).toLocaleString([], {
+      month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false,
+    });
+    label = `${stamp(state.customRange.start_ms)} → ${stamp(state.customRange.end_ms)}`;
   }
-  $("range-start").value = ranges.toLocalInput(state.customRange.start_ms);
-  $("range-end").value = ranges.toLocalInput(state.customRange.end_ms);
+  $("time-range-label").textContent = label;
+  $("time-range-button").setAttribute("aria-label", `Time range: ${label}`);
+  $("time-picker-current").textContent = label;
+  for (const button of $("time-picker").querySelectorAll("[data-range]"))
+    button.setAttribute("aria-pressed", String(button.dataset.range === selected.value));
+  const interval = $("auto-refresh");
+  interval.title = interval.value === "0" ? "Auto-refresh off" : `Auto-refresh every ${interval.selectedOptions[0].textContent}`;
+}
+function setPickerView(view) {
+  $("time-picker").dataset.view = view;
+  $("quick-range-tab").setAttribute("aria-pressed", String(view === "quick"));
+  $("custom-range-tab").setAttribute("aria-pressed", String(view === "custom"));
+}
+function positionTimePicker() {
+  const picker = $("time-picker");
+  if (!picker.open) return;
+  if (matchMedia("(max-width: 640px)").matches) {
+    picker.style.removeProperty("left");
+    picker.style.removeProperty("top");
+    return;
+  }
+  const button = $("time-range-button").getBoundingClientRect();
+  const rect = picker.getBoundingClientRect();
+  picker.style.left = `${Math.max(12, Math.min(innerWidth - rect.width - 12, button.left))}px`;
+  picker.style.top = `${Math.max(12, Math.min(button.bottom + 8, innerHeight - rect.height - 12))}px`;
+}
+function filterQuickRanges() {
+  const needle = $("range-search").value.toLowerCase().replace(/\s+/g, "");
+  const duration = /^(?:last)?(\d+)([smhdw])$/.exec(needle);
+  const seconds = duration && Number(duration[1]) * {s: 1, m: 60, h: 3600, d: 86400, w: 604800}[duration[2]];
+  let matches = 0;
+  for (const group of $("quick-ranges").children) {
+    let visible = 0;
+    for (const button of group.querySelectorAll("[data-range]")) {
+      button.hidden = duration ? Number(button.dataset.range) !== seconds : !button.dataset.search.includes(needle);
+      if (!button.hidden) visible++;
+    }
+    group.hidden = !visible;
+    matches += visible;
+  }
+  $("range-empty").hidden = matches > 0;
+}
+function closeTimePicker() {
+  $("time-picker").close();
+  $("time-range-button").setAttribute("aria-expanded", "false");
+  $("time-range-button").focus({preventScroll: true});
+}
+function openTimePicker() {
+  const selected = $("window").value;
+  let range = selected === "custom" && state.customRange;
+  if (!range) {
+    range = selected === "all" && state.data
+      ? { start_ms: state.data.range_start_ms, end_ms: state.data.range_end_ms }
+      : ranges.resolve(selected === "custom" || selected === "all" ? "300" : selected);
+  }
+  $("range-start").value = ranges.toLocalInput(range.start_ms);
+  $("range-end").value = ranges.toLocalInput(range.end_ms);
+  $("range-zone").textContent = `${timezone} · End time excluded`;
+  $("range-error").hidden = true;
+  $("range-search").value = "";
+  filterQuickRanges();
+  setPickerView(selected === "custom" ? "custom" : "quick");
+  syncTimeControls();
+  $("time-picker").showModal();
+  $("time-range-button").setAttribute("aria-expanded", "true");
+  positionTimePicker();
+  (selected === "custom" ? $("range-start") : $("range-search")).focus({preventScroll: true});
+}
+function setupTimePicker() {
+  for (const group of $("window").querySelectorAll("optgroup")) {
+    const section = document.createElement("section");
+    section.className = "quick-range-group";
+    section.setAttribute("aria-label", group.label);
+    const heading = document.createElement("h3");
+    heading.textContent = group.label;
+    section.append(heading);
+    for (const option of group.children) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = option.textContent;
+      button.dataset.range = option.value;
+      let search = option.textContent;
+      if (ranges.rolling.has(option.value)) {
+        const seconds = Number(option.value);
+        for (const [unit, scale] of [["s", 1], ["m", 60], ["h", 3600], ["d", 86400], ["w", 604800]])
+          if (seconds % scale === 0) search += ` ${seconds / scale}${unit}`;
+      }
+      button.dataset.search = search.toLowerCase().replace(/\s+/g, "");
+      button.setAttribute("aria-pressed", "false");
+      section.append(button);
+    }
+    $("quick-ranges").append(section);
+  }
+  $("time-range-button").addEventListener("click", openTimePicker);
+  $("close-time-picker").addEventListener("click", closeTimePicker);
+  $("time-picker").addEventListener("close", () => $("time-range-button").setAttribute("aria-expanded", String($("time-picker").open)));
+  $("time-picker").addEventListener("cancel", event => {
+    event.preventDefault();
+    closeTimePicker();
+  });
+  $("time-picker").addEventListener("click", event => {
+    const button = event.target.closest("[data-range]");
+    if (button) {
+      $("window").value = button.dataset.range;
+      $("window").dispatchEvent(new Event("change"));
+      closeTimePicker();
+    } else if (event.target === $("time-picker")) {
+      const rect = $("time-picker").getBoundingClientRect();
+      if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom)
+        closeTimePicker();
+    }
+  });
+  $("range-search").addEventListener("input", filterQuickRanges);
+  for (const id of ["range-start", "range-end"])
+    $(id).addEventListener("input", () => { $("range-error").hidden = true; });
+  $("range-search").addEventListener("keydown", event => {
+    const first = $("quick-ranges").querySelector("section:not([hidden]) button:not([hidden])");
+    if (event.key === "Enter") {
+      event.preventDefault();
+      first?.click();
+    } else if (event.key === "ArrowDown" && first) {
+      event.preventDefault();
+      first.focus();
+    }
+  });
+  $("quick-ranges").addEventListener("keydown", event => {
+    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+    const buttons = [...$("quick-ranges").querySelectorAll("section:not([hidden]) button:not([hidden])")];
+    const current = buttons.indexOf(event.target);
+    if (current < 0) return;
+    event.preventDefault();
+    const next = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1
+      : (current + (event.key === "ArrowDown" ? 1 : -1) + buttons.length) % buttons.length;
+    buttons[next].focus();
+  });
+  for (const [id, view] of [["quick-range-tab", "quick"], ["custom-range-tab", "custom"]])
+    $(id).addEventListener("click", () => {
+      setPickerView(view);
+      (view === "quick" ? $("range-search") : $("range-start")).focus({preventScroll: true});
+    });
+  addEventListener("resize", positionTimePicker);
 }
 function rangeStamp(ms) {
   return new Date(ms).toLocaleString([], {
@@ -839,6 +975,7 @@ function render() {
     ),
   );
   $("updated").textContent = `As of ${detailClock(data.now_ms)}`;
+  $("time-range-button").title = `${rangeStamp(data.range_start_ms)} → ${rangeStamp(data.range_end_ms)} · ${timezone}`;
   $("range-status").textContent = `${rangeStamp(data.range_start_ms)} → ${rangeStamp(data.range_end_ms)} · ${timezone}${data.historical ? " · Range totals; end excluded" : ""}`;
   $("clear").hidden = !state.replica;
   const inventories = {project: data.projects, site: data.site_options, host: data.hosts};
@@ -1176,6 +1313,7 @@ async function refresh() {
   }
 }
 function showLogin() {
+  if ($("time-picker").open) closeTimePicker();
   $("login").hidden = false;
   $("dashboard").hidden = true;
   $("logout").hidden = true;
@@ -1248,7 +1386,7 @@ for (const id of ["project", "site", "host", "window", "chart-detail"])
     state.eventPage = 0;
     if (["project", "site", "host"].includes(id)) state.replica = "";
     if (id === "project") $("site").value = "";
-    if (id === "window") showCustomRange();
+    if (id === "window") syncTimeControls();
     if (id === "window" || id === "chart-detail") savePreferences();
     refresh();
   });
@@ -1260,7 +1398,12 @@ $("custom-range").addEventListener("submit", event => {
       end_ms: ranges.parseLocalInput($("range-end").value),
     });
     state.customRange = { start_ms: chosen.start_ms, end_ms: chosen.end_ms };
+    $("window").value = "custom";
+    state.routePage = 0;
+    state.eventPage = 0;
     $("range-error").hidden = true;
+    syncTimeControls();
+    closeTimePicker();
     savePreferences();
     refresh();
   } catch (error) {
@@ -1270,6 +1413,7 @@ $("custom-range").addEventListener("submit", event => {
 });
 $("auto-refresh").addEventListener("change", () => {
   state.refreshSeconds = Number($("auto-refresh").value);
+  syncTimeControls();
   savePreferences();
   scheduleRefresh();
 });
@@ -1359,5 +1503,6 @@ addEventListener("scroll", () => {
     }
   });
 }, {passive: true});
+setupTimePicker();
 restorePreferences();
 connect();

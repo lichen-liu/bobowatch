@@ -83,10 +83,10 @@ work directly. Local dashboard mode is intended for a trusted LAN. HTTP is
 unencrypted; public source addresses, unknown hosts and cross-origin reads remain
 blocked. No router port forwarding is needed.
 
-The dashboard defaults to **Last 5 minutes** with **Auto-refresh: Every 5 minutes**.
-The time window also offers **Last 1 minute** and **Last 30 seconds**, alongside
-longer history windows. Auto-refresh is a separate setting with **Every 30 seconds**,
-**Every 1 minute**, **Every 5 minutes** and **Off**. Your time-window and refresh
+The dashboard defaults to **Last 5 minutes** with **Auto-refresh: 5m**.
+Click the clock button for searchable quick ranges and exact calendar dates.
+Rolling choices span 30 seconds to 365 days. The interval selector next to the
+refresh arrow offers **30s**, **1m**, **5m** and **Off**. Your time-window and refresh
 choices are remembered in this browser; credentials are never stored with them.
 Manual refresh and filter changes fetch immediately. Hidden tabs pause automatic
 updates and refresh once when visible again, unless auto-refresh is off. Requests
@@ -101,11 +101,14 @@ remains a separate disk-backed review tool; it is not the installed runtime.
 
 ## Calendar and custom history ranges
 
-The time-window menu separates rolling windows from calendar periods:
+The time picker groups quick ranges into minutes, hours, days/weeks and calendar
+periods. Search by name or shorthand such as `2h`, `3d` or `2w`:
 
 | Preset | Range |
 | --- | --- |
-| Last 24 hours / 7 days / 30 days / 90 days | Exact elapsed duration ending at refresh time |
+| Last 30s / 1m / 2m / 5m / 10m / 15m / 30m / 45m | Exact elapsed duration ending at refresh time |
+| Last 1h / 2h / 3h / 4h / 6h / 8h / 12h / 24h | Exact elapsed duration ending at refresh time |
+| Last 2d / 3d / 7d / 14d / 30d / 60d / 90d / 180d / 365d | Exact elapsed duration ending at refresh time |
 | Today / Yesterday | Local midnight to now / the previous complete local day |
 | This week / Last week | Monday 00:00 to now / the previous complete Monday–Monday week |
 | This month / Last month | First of the month to now / the previous complete calendar month |
@@ -115,7 +118,7 @@ The time-window menu separates rolling windows from calendar periods:
 The browser's local timezone is shown below the controls. Calendar days follow
 local daylight-saving changes, so Yesterday may span 23 or 25 hours; Last 24 hours
 always spans 24 elapsed hours. Weeks start on Monday. For custom ranges, select
-both dates/times and click **Apply range**. The start is included and the end is
+both dates/times and click **Apply time range**. The start is included and the end is
 excluded; select the next day's midnight to include a complete final day. Empty,
 reversed, nonexistent local times and future ranges are rejected. Ambiguous
 fall-back times use the earlier offset, matching the browser's date handling.
