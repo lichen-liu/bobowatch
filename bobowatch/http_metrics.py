@@ -115,14 +115,34 @@ def load_http(conn, rows):
             by_id[route["snapshot_id"]]["routes"].append(dict(route))
 
 
-def summary(rows):
+def endpoint_candidates(routes):
+    """Keep the leaders in each investigation, including quiet failing routes."""
+    active = [route for route in routes if route["requests"]]
+    candidates = {}
+    for score in (
+        lambda r: r["requests"],
+        lambda r: r["errors"],
+        lambda r: r["errors"] / r["requests"],
+        lambda r: r["duration_us"] / r["requests"],
+        lambda r: r["duration_us"],
+    ):
+        ranked = sorted(active, key=lambda r: (-score(r), -r["requests"], r["site"], r["route"]))
+        for route in ranked[:20]:
+            candidates[route["site"], route["route"]] = route
+    return sorted(candidates.values(), key=lambda r: (-r["requests"], r["site"], r["route"]))
+
+
+def summary(rows, *, include_routes=True):
     counts = sum(row["delta_requests"] for row in rows)
     buckets = [sum(row["buckets"][i] for row in rows) for i in range(len(BUCKETS_US) + 1)]
     extended = [row for row in rows if row["http"] is not None]
     codes = [sum(row["http"]["codes"][i] for row in extended) for i in range(5)]
     sized = sum(row["http"]["delta_sized_requests"] for row in extended)
+    sent = sum(row["http"]["delta_bytes_sent"] for row in extended)
+    received = sum(row["http"]["delta_bytes_received"] for row in extended)
+    slow = sum(buckets[BUCKETS_US.index(1_000_000) + 1 :])
     routes = {}
-    for row in rows:
+    for row in rows if include_routes else ():
         for route in row["routes"]:
             cell = routes.setdefault(
                 (row["site"], route["route"]),
@@ -151,7 +171,14 @@ def summary(rows):
         "status_classes": codes if extended else None,
         "http_requests": sum(row["delta_requests"] for row in extended),
         "sized_requests": sized,
-        "routes": sorted(routes.values(), key=lambda route: route["requests"], reverse=True)[:20],
+        "slow_requests": slow,
+        "slow_request_pct": slow / counts * 100 if counts else None,
+        "bytes_sent": sent,
+        "bytes_received": received,
+        "mean_response_bytes": sent / sized if sized else None,
+        "mean_request_bytes": received / sized if sized else None,
+        "routes": endpoint_candidates(routes.values()),
+        "route_count": sum(bool(route["requests"]) for route in routes.values()),
         "snapshot_count": len(rows),
     }
 
@@ -163,7 +190,7 @@ def charts(rows, replicas, step, now, stale_ms):
         cell.append(row)
     result = []
     for at, members in sorted(cells.items()):
-        metrics = summary(members)
+        metrics = summary(members, include_routes=False)
         by_replica = {}
         for row in members:
             by_replica.setdefault(row["replica"], []).append(row)
@@ -194,6 +221,14 @@ def charts(rows, replicas, step, now, stale_ms):
                 "at_ms": at,
                 "rps": sum(rates) if not partial else None,
                 "requests": metrics["requests"],
+                "errors": metrics["errors"],
+                "client_errors": metrics["status_classes"][3]
+                if metrics["status_classes"] is not None
+                else None,
+                "mean_ms": metrics["mean_ms"],
+                "slow_request_pct": metrics["slow_request_pct"],
+                "mean_response_bytes": metrics["mean_response_bytes"],
+                "mean_request_bytes": metrics["mean_request_bytes"],
                 "partial": partial,
                 "reporting": len(by_replica),
                 "p50": metrics["latency"]["p50"],

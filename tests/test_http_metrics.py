@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from bobowatch import Monitor
 from bobowatch.config import initialize
+from bobowatch.http_metrics import endpoint_candidates
 from bobowatch.protocol import Conflict, Invalid, validate
 from bobowatch.storage import SQLiteStore
 
@@ -82,6 +83,73 @@ class HTTPMetricsTests(unittest.TestCase):
         self.assertEqual(
             next(r for r in p["http"]["routes"] if r["route"] == "unmatched")["requests"], 1
         )
+
+    def test_weighted_means_slow_boundary_and_measured_body_coverage(self):
+        for _ in range(9):
+            self.monitor.record_request(0.1, bytes_sent=100, bytes_received=10)
+        self.ingest(self.snapshot(1000))
+        self.monitor.record_request(1.0)  # Exactly one second is not over one second.
+        self.monitor.record_request(1.1, bytes_sent=300, bytes_received=30)
+        self.ingest(self.snapshot(2000))
+        data = self.data()
+        metrics = data["http"]
+        self.assertAlmostEqual(metrics["mean_ms"], 3000 / 11)
+        self.assertEqual(metrics["slow_requests"], 1)
+        self.assertAlmostEqual(metrics["slow_request_pct"], 100 / 11)
+        self.assertEqual(metrics["sized_requests"], 10)
+        self.assertEqual(metrics["bytes_sent"], 1200)
+        self.assertEqual(metrics["bytes_received"], 120)
+        self.assertEqual(metrics["mean_response_bytes"], 120)
+        self.assertEqual(metrics["mean_request_bytes"], 12)
+        # Chart means use request counts as weights, too; partial sizes are explicit.
+        self.assertAlmostEqual(data["charts"][-1]["mean_ms"], 3000 / 11)
+        self.assertEqual(data["charts"][-1]["mean_response_bytes"], 120)
+        self.assertIsNone(data["charts"][-1]["bytes_sent_per_sec"])
+        self.assertEqual(data["charts"][-1]["errors"], 0)
+        self.assertEqual(data["charts"][-1]["client_errors"], 0)
+
+    def test_empty_and_v1_metrics_do_not_invent_body_sizes_or_error_classes(self):
+        empty = self.data()["http"]
+        for key in ("mean_ms", "slow_request_pct", "mean_response_bytes", "mean_request_bytes"):
+            self.assertIsNone(empty[key])
+        self.assertEqual(empty["slow_requests"], 0)
+        self.monitor.record_request(2, 503)
+        payload = self.snapshot(1000)
+        payload.pop("http")
+        payload["version"] = 1
+        self.ingest(validate(payload))
+        data = self.data()
+        self.assertEqual(data["http"]["slow_request_pct"], 100)
+        self.assertEqual(data["http"]["errors"], 1)
+        self.assertEqual(data["http"]["route_count"], 0)
+        self.assertIsNone(data["http"]["mean_response_bytes"])
+        self.assertIsNone(data["charts"][-1]["client_errors"])
+        self.assertIsNone(data["charts"][-1]["mean_request_bytes"])
+        self.assertEqual(data["charts"][-1]["errors"], 1)
+
+    def test_endpoint_candidates_keep_quiet_failures_and_slow_routes_bounded(self):
+        busy = [
+            {
+                "site": "one",
+                "route": f"/busy-{i}",
+                "requests": 1000,
+                "errors": 0,
+                "duration_us": 1000,
+            }
+            for i in range(100)
+        ]
+        quiet = {
+            "site": "two",
+            "route": "/quiet-failing",
+            "requests": 1,
+            "errors": 1,
+            "duration_us": 2_000_000,
+        }
+        candidates = endpoint_candidates([*busy, quiet])
+        self.assertIn(quiet, candidates)
+        self.assertLessEqual(len(candidates), 100)
+        self.assertEqual(candidates, endpoint_candidates([quiet, *reversed(busy)]))
+        self.assertEqual(endpoint_candidates([{**quiet, "requests": 0, "errors": 0}]), [])
 
     def test_unknown_body_sizes_cannot_report_phantom_throughput(self):
         self.monitor.record_request(0.1)
