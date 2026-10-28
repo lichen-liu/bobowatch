@@ -10,8 +10,15 @@ fetches them again. Both default to five minutes. Rolling windows move with each
 refresh. Calendar presets use the browser's timezone, with Monday-start weeks.
 Custom ranges use the native calendar/time controls and stay fixed after Apply,
 including during auto-refresh or reload. The end is excluded. The time range,
-refresh interval and traffic/error chart modes are remembered in the browser;
+refresh interval, chart detail and traffic/error chart modes are remembered in the browser;
 credentials remain in tab memory only. Hidden tabs pause polling.
+
+**All retained history** spans the oldest through the newest matching observation,
+including retained records from retired replicas. Custom dates have no duration
+cap; the API also accepts any positive rolling window in seconds. **Chart detail**
+offers automatic grouping, fixed time groups and **Every timestamp**. Grouping
+combines all observations in a time group; it never samples or drops records.
+At source detail, multiple replicas reporting the same timestamp are combined.
 
 ## HTTP signals
 
@@ -47,45 +54,59 @@ Use **Explore server errors** or **Explore slow endpoints** from the summary,
 or go directly to the endpoint explorer. Search registered route templates or
 site IDs, rank by traffic, 5xx count, 5xx rate, mean duration or total response
 time, and set a minimum request count to avoid ranking a route on a tiny sample.
-Ten matching rows appear per page. The site link focuses its site's overview.
+All recorded endpoint templates are loaded, including idle templates by default.
+Rows offers 10, 25, 100 or All; every matching row remains reachable. Search,
+rankings and minimum counts operate on the entire returned set. The site link
+focuses its site's overview.
 
 Rows are grouped by site and registered route template, and show request count,
 5xx count/rate, mean time and total response time. Total response time includes
 overlapping requests; it measures aggregate request duration, not CPU time.
 There are no per-route latency percentiles in the current producer protocol.
 
-To keep the response bounded, the server returns the union of the top 20
-endpoints for each of the five rankings, at most 100 distinct site/route pairs.
-This keeps quiet failing or slow endpoints available for investigation even
-when they are absent from the traffic leaders. If other endpoints are omitted,
-the explorer says how many candidates were returned. Search and minimum counts
-apply to those candidates; narrow the site's scope or time window to find more.
+The events section also loads the complete selected range. Search by message,
+site or replica, filter by severity, and choose 25, 100 or All rows. Timestamps
+include the local date and time. Pagination affects presentation only.
+
+**Download JSON** saves all totals, chart points, endpoints and events from the
+last successful query, regardless of the current table page or search. The file
+includes the applied scope, exact dates, chart grouping, and storage/history
+metadata. Credentials are never included. Choose Every timestamp before exporting
+when you want source time resolution.
 
 ## Coverage and retained history
 
 **Reporting** describes fresh monitoring observations. It does not establish
 public uptime or test a website from outside the host. Historical views show
 replicas with recorded observations in the selected range. Stale or missing
-replicas, clock skew and partial intervals are identified separately. Failed
+replicas, clock skew and partial intervals are identified separately. Retired
+replicas remain available for historical analysis and do not contribute to live
+gauges or the expected active-replica count. Observed counts, latency and body
+averages remain visible for partial intervals with a tooltip annotation; unknown
+fleet rates, concurrency and throughput remain gaps. Failed
 refreshes preserve the last successful view and mark updates unavailable.
 
 The measurement strip reports status/endpoint coverage and body-size coverage.
 Old v1 producers can still supply request counts, server errors and latency
 without extended HTTP measurements. Their missing data is not filled with zero.
 
-Queries include all retained observations in the selected scope and range. Larger
-ranges aggregate counters and histograms in SQL, keeping roughly 180 chart buckets
-without discarding early observations. Request/error totals, latency distributions,
-body measurements and endpoint rankings cover the same range. Live gauges still
-use the latest actual sample, rather than a bucket average.
+Queries include all retained observations in the selected scope and range, with
+no snapshot cap, endpoint cap, event cutoff or execution deadline. All query paths
+aggregate compatible counters and histograms in SQL. Totals, latency distributions,
+body measurements and endpoints cover the same range. Live gauges use the latest
+actual sample, rather than a time-group average. Reads and their storage metadata
+share one consistent SQL transaction and wait for database locks without a query
+time budget. They do not wait on the ingestion writer's acknowledgement queue.
 
-A two-second query budget protects ingestion and memory. A query that exceeds it
-returns a timeout with no partial result; the dashboard keeps the previous range
-and asks you to narrow the scope or dates. If a saved range times out on first
-load, the range controls remain available. Installed history lives on the quota
-limited RAM disk. Earlier data may have been evicted or lost on reboot. Selecting
-a longer range cannot restore it. **History & storage** shows usage, quota, epoch,
-oldest retained observation and eviction counts.
+The browser waits for a query to finish and shows elapsed time. Auto-refresh waits
+for completion before scheduling the next request. A failed request preserves the
+last successful view; range controls remain available on an initial failure.
+The view is labeled with its data's as-of time.
+
+Installed history lives on the quota limited RAM disk. Earlier data may have been
+evicted or lost on reboot. Selecting a longer range cannot restore it.
+**History & storage** shows usage, quota, epoch, oldest retained observation and
+eviction counts.
 
 These views use existing SQL observations. They add no producer fields, storage
 migration, external service, frontend build or runtime dependency. Updating

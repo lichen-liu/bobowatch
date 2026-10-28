@@ -216,11 +216,12 @@ run when upgrading its wire version; upgrade the core before its adapters.
 ## Next milestones
 
 See [implemented runtime/storage architecture](docs/runtime-storage-design.md)
-and [operator commands](docs/runtime.md). WSGI wrappers, process/host sampling,
+and [operator commands](docs/runtime.md). Process/host sampling,
 public probes, job/freshness hooks, alert state and server-database support remain
 future work. Larger history queries aggregate the full retained range in SQL,
-with bounded charts/endpoint results and a two-second read budget. A timeout
-returns no partial totals. Installed storage evicts old history at its quota. Legacy disk demos
+without row, endpoint, event or execution caps. Chart grouping is adjustable,
+including every source timestamp. All table rows and a complete JSON download
+remain accessible. Installed storage evicts old history at its quota. Legacy disk demos
 remain unbounded unless explicitly configured. Use distinct replica slots for
 concurrent serving processes.
 
