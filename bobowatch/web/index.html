@@ -7,6 +7,7 @@
     <link rel="icon" href="/favicon.svg" />
     <link rel="stylesheet" href="/style.css" />
     <script src="/ranges.js" defer></script>
+    <script src="/metrics.js" defer></script>
     <script src="/app.js" defer></script>
   </head>
   <body>
@@ -29,7 +30,7 @@
       </nav>
       <div class="sidebar-bottom">
         <span class="session-dot"></span> On-demand session
-        <p>Start when you need it.<br />History stays when you leave.</p>
+        <p>Start when you need it.<br />RAM history lasts until release or reboot.</p>
       </div>
     </aside>
     <div class="workspace">
@@ -78,6 +79,10 @@
             </div>
             <div id="scope-meta" class="scope-meta"></div>
           </section>
+          <nav class="mobile-nav" aria-label="Jump to dashboard section">
+            <a href="#performance">Charts</a><a href="#routes">Endpoints</a>
+            <a href="#replicas">Replicas</a><a href="#event-section">Events</a>
+          </nav>
           <p id="demo-banner" class="demo-banner" hidden>
             <span class="demo-label">DEMO WORKSPACE</span
             ><span
@@ -85,7 +90,6 @@
               fictional.</span
             ><span class="demo-session">Manual session</span>
           </p>
-          <p id="storage-status" class="chart-note" aria-live="polite"></p>
           <p id="notice" class="notice" role="status" hidden></p>
           <section class="toolbar" aria-label="Dashboard filters">
             <label
@@ -145,6 +149,10 @@
               ↻ <span>Refresh</span>
             </button>
           </section>
+          <div id="scope-status" class="scope-status" aria-live="polite">
+            <span id="scope-label">All projects</span>
+            <button id="clear-scope" hidden>Clear scope</button>
+          </div>
           <form id="custom-range" class="custom-range panel" hidden>
             <label for="range-start">From
               <input id="range-start" type="datetime-local" step="1" min="1970-01-01T00:00" required />
@@ -162,6 +170,11 @@
             class="summary"
             aria-label="HTTP serving summary"
           ></section>
+          <section id="secondary-summary" class="secondary-summary" aria-label="HTTP detail metrics"></section>
+          <section class="coverage-panel" aria-label="Measurement coverage">
+            <div><strong>Measurement coverage</strong><p id="coverage-note"></p></div>
+            <span id="telemetry-status" class="pill neutral"></span>
+          </section>
           <section
             id="performance"
             class="performance"
@@ -171,9 +184,16 @@
               <div class="panel-heading">
                 <div>
                   <span class="eyebrow">TRAFFIC</span>
-                  <h2>Request rate</h2>
+                  <h2 id="traffic-title">Request rate</h2>
                 </div>
-                <span id="traffic-value" class="chart-value"></span>
+                <div class="chart-controls">
+                  <label class="sr-only" for="traffic-view">Traffic chart measure</label>
+                  <select id="traffic-view">
+                    <option value="rate">Requests / second</option>
+                    <option value="count">Requests / bucket</option>
+                  </select>
+                  <span id="traffic-value" class="chart-value"></span>
+                </div>
               </div>
               <div id="traffic-chart" class="plot"></div>
               <div id="traffic-legend" class="legend"></div>
@@ -195,10 +215,31 @@
                   <span class="eyebrow">ERRORS</span>
                   <h2>Response errors</h2>
                 </div>
-                <span class="chart-note">% of requests</span>
+                <label><span class="sr-only">Error chart measure</span>
+                  <select id="error-view">
+                    <option value="rate">% of requests</option>
+                    <option value="count">Response count</option>
+                  </select>
+                </label>
               </div>
               <div id="errors-chart" class="plot"></div>
               <div id="errors-legend" class="legend"></div>
+            </article>
+            <article class="panel chart-panel">
+              <div class="panel-heading">
+                <div><span class="eyebrow">SLOW RESPONSES</span><h2>Responses over one second</h2></div>
+                <span class="chart-note">% of completed requests</span>
+              </div>
+              <div id="slow-chart" class="plot"></div>
+              <div id="slow-legend" class="legend"></div>
+            </article>
+            <article class="panel chart-panel">
+              <div class="panel-heading">
+                <div><span class="eyebrow">PAYLOAD SIZE</span><h2>Mean HTTP body size</h2></div>
+                <span class="chart-note">Measured requests · KiB</span>
+              </div>
+              <div id="payload-chart" class="plot"></div>
+              <div id="payload-legend" class="legend"></div>
             </article>
             <article class="panel chart-panel">
               <div class="panel-heading">
@@ -255,11 +296,38 @@
               <div class="panel-heading">
                 <div>
                   <span class="eyebrow">WHERE THE WORK HAPPENS</span>
-                  <h2>Top endpoints</h2>
+                  <h2>Endpoint explorer</h2>
                 </div>
                 <span class="chart-note">Bounded route templates</span>
               </div>
-              <div id="route-table" class="table-scroll"></div>
+              <div class="endpoint-tools">
+                <label class="endpoint-search">Find endpoint or site
+                  <input id="route-search" type="search" placeholder="e.g. /api/search" maxlength="128" />
+                </label>
+                <label>Rank by
+                  <select id="route-sort">
+                    <option value="requests">Most traffic</option>
+                    <option value="errors">Most server errors</option>
+                    <option value="error-rate">Highest 5xx rate</option>
+                    <option value="mean">Slowest mean response</option>
+                    <option value="work">Most total response time</option>
+                  </select>
+                </label>
+                <label>Minimum requests
+                  <select id="route-minimum">
+                    <option value="1">1</option><option value="10">10</option>
+                    <option value="100">100</option><option value="1000">1,000</option>
+                  </select>
+                </label>
+              </div>
+              <p id="route-coverage" class="route-coverage"></p>
+              <p class="table-hint">Swipe sideways for latency and total time →</p>
+              <div id="route-table" class="table-scroll" tabindex="0" role="region" aria-label="Endpoint metrics"></div>
+              <div class="table-pagination">
+                <span id="route-count" role="status"></span>
+                <button id="route-previous" aria-label="Previous endpoints">← Previous</button>
+                <button id="route-next" aria-label="Next endpoints">Next →</button>
+              </div>
             </article>
             <article class="panel response-panel">
               <div class="panel-heading">
@@ -290,6 +358,10 @@
               yet.</span
             >
           </footer>
+          <details class="storage-details">
+            <summary>History &amp; storage</summary>
+            <p id="storage-status"></p>
+          </details>
         </div>
       </main>
     </div>

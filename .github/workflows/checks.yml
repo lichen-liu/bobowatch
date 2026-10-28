@@ -44,5 +44,5 @@ jobs:
       - name: Test
         run: python -Werror::ResourceWarning -m unittest discover -s tests -v
 
-      - name: Calendar range and daylight-saving tests
-        run: node --test tests/test_calendar_ranges.cjs
+      - name: Dashboard logic and daylight-saving tests
+        run: node --test tests/test_*.cjs
