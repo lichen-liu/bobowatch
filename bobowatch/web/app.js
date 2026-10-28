@@ -12,6 +12,8 @@ const state = {
   controller: null,
   refreshSeconds: 300,
   customRange: null,
+  routePage: 0,
+  appliedScope: {},
   hiddenSeries: new Map(),
 };
 let timer;
@@ -31,6 +33,8 @@ function restorePreferences() {
       $("window").value = saved.window;
     if (saved && refreshIntervals.has(saved.refresh))
       $("auto-refresh").value = saved.refresh;
+    if (["rate", "count"].includes(saved?.traffic)) $("traffic-view").value = saved.traffic;
+    if (["rate", "count"].includes(saved?.errors)) $("error-view").value = saved.errors;
   } catch {
     // Storage may be unavailable or contain invalid data. Keep the defaults.
   }
@@ -47,6 +51,8 @@ function savePreferences() {
         custom: state.customRange && {
           start_ms: state.customRange.start_ms, end_ms: state.customRange.end_ms,
         },
+        traffic: $("traffic-view").value,
+        errors: $("error-view").value,
       }),
     );
   } catch {
@@ -138,6 +144,11 @@ const latency = (p) =>
       : p.upper_ms >= 1000
         ? `≤${numeric(p.upper_ms / 1000, 2)} s`
         : `≤${number(p.upper_ms)} ms`;
+const bytes = value => value === null || value === undefined ? "—"
+  : value >= 2 ** 30 ? `${numeric(value / 2 ** 30, 2)} GiB`
+  : value >= 2 ** 20 ? `${numeric(value / 2 ** 20, 1)} MiB`
+  : value >= 1024 ? `${numeric(value / 1024, 1)} KiB` : `${number(value)} B`;
+const percent = (part, whole) => whole ? `${numeric(part / whole * 100, 1)}%` : "—";
 const badge = (text, kind = "") => el("span", text, `pill ${kind}`);
 function options(id, rows, all) {
   const select = $(id),
@@ -356,7 +367,7 @@ function lineChart(id, title, series, format) {
       const row = append(
         el("div"),
         el("span", line.name),
-        el("b", value === null ? "No data" : format(value, false)),
+        el("b", value === null ? "No data" : line.format ? line.format(value) : format(value, false)),
       );
       tooltip.append(row);
       markers[i].setAttribute(
@@ -583,7 +594,11 @@ function responseMix() {
 function table(headers, rows) {
   const node = el("table"),
     head = el("tr");
-  headers.forEach((name, i) => head.append(el("th", name, i ? "numeric" : "")));
+  headers.forEach((name, i) => {
+    const cell = el("th", name, i ? "numeric" : "");
+    cell.setAttribute("scope", "col");
+    head.append(cell);
+  });
   node.append(append(el("thead"), head), append(el("tbody"), ...rows));
   return node;
 }
@@ -591,11 +606,26 @@ function routeTable() {
   const host = $("route-table");
   host.replaceChildren();
   const routes = state.data.http.routes;
-  if (!routes.length) {
+  const selection = BoboWatchMetrics.endpoints(routes, {
+    query: $("route-search").value, sort: $("route-sort").value,
+    minimum: Number($("route-minimum").value), page: state.routePage,
+  });
+  state.routePage = selection.page;
+  const candidateCount = state.data.http.route_count;
+  $("route-coverage").textContent = candidateCount > routes.length
+    ? `${number(routes.length)} of ${number(candidateCount)} observed endpoints: the top 20 for each ranking. Narrow the site or time window to find more.`
+    : `${number(candidateCount)} observed endpoints · ${percent(state.data.http.http_requests, state.data.http.requests)} request coverage. Totals include recorded intervals only.`;
+  $("route-count").textContent = selection.total
+    ? `${selection.page * 10 + 1}–${Math.min((selection.page + 1) * 10, selection.total)} of ${selection.total} matches`
+    : "0 matches";
+  $("route-previous").disabled = selection.page === 0;
+  $("route-next").disabled = selection.page >= selection.pages - 1;
+  if (!selection.rows.length) {
     host.append(
       el(
         "p",
-        "No endpoint observations. Register bounded route templates in the adapter.",
+        routes.length ? "No matching endpoints. Try a different search or minimum request count."
+          : "No endpoint observations in this window. Producers must supply registered route templates.",
         "empty",
       ),
     );
@@ -603,15 +633,16 @@ function routeTable() {
   }
   host.append(
     table(
-      ["Endpoint / site", "Requests", "5xx", "Mean time"],
-      routes
-        .filter((r) => r.requests)
-        .slice(0, 8)
+      ["Endpoint / site", "Requests", "5xx", "5xx rate", "Mean time", "Total time"],
+      selection.rows
         .map((route) => {
+          const site = el("button", `${route.site} ↗`, "endpoint-site");
+          site.dataset.site = route.site;
+          site.setAttribute("aria-label", `Focus site ${route.site}`);
           const first = append(
             el("td"),
             el("span", route.route, "endpoint"),
-            el("small", route.site || ""),
+            site,
           );
           const bar = el("div", undefined, "route-bar"),
             fill = el("i");
@@ -622,6 +653,7 @@ function routeTable() {
             el("tr"),
             first,
             el("td", number(route.requests), "numeric"),
+            el("td", number(route.errors), route.errors ? "numeric error-number" : "numeric"),
             el(
               "td",
               `${numeric((route.errors / route.requests) * 100)}%`,
@@ -632,6 +664,7 @@ function routeTable() {
               `${numeric(route.duration_us / route.requests / 1000)} ms`,
               "numeric",
             ),
+            el("td", `${numeric(route.duration_us / 1e6, 2)} s`, "numeric"),
           );
         }),
     ),
@@ -649,6 +682,9 @@ function siteCard(site) {
     el("h2", site.title),
     el("p", site.id),
   );
+  const focus = el("button", "Focus site ↗", "focus-site");
+  focus.dataset.site = site.id;
+  title.append(focus);
   node.append(
     append(
       el("div", undefined, "site-top"),
@@ -774,6 +810,12 @@ function render() {
   $("updated").textContent = `Updated ${detailClock(data.now_ms)}`;
   $("range-status").textContent = `${rangeStamp(data.range_start_ms)} → ${rangeStamp(data.range_end_ms)} · ${timezone}${data.historical ? " · Range totals; end excluded" : ""}`;
   $("clear").hidden = !state.replica;
+  const inventories = {project: data.projects, site: data.site_options, host: data.hosts};
+  const selectedScope = ["project", "site", "host"].filter(id => state.appliedScope[id])
+    .map(id => inventories[id].find(row => row.id === state.appliedScope[id])?.title || state.appliedScope[id]);
+  if (state.appliedScope.replica) selectedScope.push(`Replica: ${state.appliedScope.replica}`);
+  $("scope-label").textContent = selectedScope.join(" / ") || "All projects · all sites · all hosts";
+  $("clear-scope").hidden = !selectedScope.length;
   $("scope-meta").replaceChildren(
     el("div", `${data.sites.length} sites · ${replicas.length} replicas`),
     el(
@@ -833,22 +875,60 @@ function render() {
       "⇄",
     ),
   );
+  $("secondary-summary").replaceChildren(
+    kpi("Mean response time", numeric(metrics.mean_ms, 1), "ms",
+      "Weighted by completed requests", p => p.mean_ms, colors.amber, "◷"),
+    kpi("Responses over 1s", metrics.slow_request_pct === null ? "—" : `${numeric(metrics.slow_request_pct, 1)}%`, "",
+      `${number(metrics.slow_requests)} / ${number(metrics.requests)} requests`,
+      p => p.slow_request_pct, colors.purple, "⌁"),
+    kpi("Client error rate", percent(metrics.status_classes?.[3], metrics.http_requests), "",
+      `${metrics.status_classes ? number(metrics.status_classes[3]) : "—"} responses with 4xx`,
+      p => p.client_error_pct, colors.amber, "↙"),
+    kpi("Mean response body", bytes(metrics.mean_response_bytes), "",
+      `${number(metrics.sized_requests)} / ${number(metrics.requests)} requests measured`,
+      p => p.mean_response_bytes, colors.blue, "⇄"),
+  );
+  const investigate = (label, sort) => {
+    const button = el("button", label, "investigate");
+    button.type = "button";
+    button.addEventListener("click", () => {
+      $("route-sort").value = sort;
+      $("route-search").value = "";
+      $("route-minimum").value = "1";
+      state.routePage = 0;
+      routeTable();
+      $("routes").scrollIntoView({ block: "start", behavior: "smooth" });
+      $("route-sort").focus({ preventScroll: true });
+    });
+    return button;
+  };
+  $("summary").children[2].append(investigate("Explore server errors →", "errors"));
+  $("secondary-summary").children[1].append(investigate("Explore slow endpoints →", "mean"));
+  $("coverage-note").textContent = metrics.requests
+    ? `Status & endpoints: ${percent(metrics.http_requests, metrics.requests)} · Body sizes: ${percent(metrics.sized_requests, metrics.requests)} · Measured bodies: ${metrics.sized_requests ? `${bytes(metrics.bytes_sent)} out / ${bytes(metrics.bytes_received)} in` : "unavailable"}. Gaps are unknown; body sizes exclude headers.`
+    : "No completed requests in this window. Latency, percentages and body averages remain unknown.";
+  $("telemetry-status").textContent = state.error ? "Updates unavailable"
+    : data.historical ? `${replicas.filter(r => r.http.snapshot_count).length}/${replicas.length} replicas recorded`
+    : `${fresh}/${replicas.length} replicas reporting`;
+  $("telemetry-status").className = `pill ${state.error || (!data.historical && fresh < replicas.length) ? "warning" : "neutral"}`;
+  const trafficCounts = $("traffic-view").value === "count";
+  $("traffic-title").textContent = trafficCounts ? "Request volume" : "Request rate";
   const traffic = [
-    { name: "All selected sites", color: colors.teal, get: (p) => p.rps },
+    { name: "All selected sites", color: colors.teal, get: (p) => trafficCounts ? p.requests : p.rps },
   ];
   if (data.sites.length > 1)
     data.sites.forEach((site, i) =>
       traffic.push({
         name: site.title,
         color: [colors.blue, colors.purple, colors.amber][i % 3],
-        get: (p) => p.rps,
+        get: (p) => trafficCounts ? p.requests : p.rps,
         points: site.charts,
       }),
     );
-  lineChart("traffic-chart", "Request rate over time", traffic, (v, tick) =>
-    tick ? numeric(v, 0) : `${numeric(v, 2)} req/s`,
+  lineChart("traffic-chart", trafficCounts ? "Requests per chart bucket" : "Request rate over time", traffic, (v, tick) =>
+    tick ? numeric(v, 0) : trafficCounts ? `${number(v)} requests` : `${numeric(v, 2)} req/s`,
   );
-  $("traffic-value").textContent = data.historical
+  $("traffic-value").textContent = data.historical || trafficCounts
     ? `${number(metrics.requests)} requests` : state.error ? "—" : `${numeric(data.current.rps)} req/s`;
   lineChart(
     "latency-chart",
@@ -872,9 +952,15 @@ function render() {
         color: colors.purple,
         get: (p) => (pValue(p.p99) === null ? null : pValue(p.p99) / 1000),
       },
+      {
+        name: "Mean", caption: metrics.mean_ms === null ? "—" : `${numeric(metrics.mean_ms)} ms`,
+        color: colors.amber, get: p => p.mean_ms === null ? null : p.mean_ms / 1000,
+        format: v => `${numeric(v, 3)} s`,
+      },
     ],
     (v, tick) => (tick ? numeric(v, 2) : `≤${numeric(v, 3)} s`),
   );
+  const errorCounts = $("error-view").value === "count";
   lineChart(
     "errors-chart",
     "4xx and 5xx response error share",
@@ -882,16 +968,23 @@ function render() {
       {
         name: "4xx client errors",
         color: colors.amber,
-        get: (p) => p.client_error_pct,
+        get: (p) => errorCounts ? p.client_errors : p.client_error_pct,
       },
       {
         name: "5xx server errors",
         color: colors.red,
-        get: (p) => p.server_error_pct,
+        get: (p) => errorCounts ? p.errors : p.server_error_pct,
       },
     ],
-    (v) => `${numeric(v, 1)}%`,
+    (v, tick) => errorCounts ? tick ? number(v) : `${number(v)} responses` : `${numeric(v, 1)}%`,
   );
+  lineChart("slow-chart", "Share of completed requests over one second", [
+    {name: ">1 second", color: colors.purple, get: p => p.slow_request_pct},
+  ], v => `${numeric(v, 1)}%`);
+  lineChart("payload-chart", "Mean body size among measured requests", [
+    {name: "Response body", color: colors.teal, get: p => p.mean_response_bytes === null ? null : p.mean_response_bytes / 1024},
+    {name: "Request body", color: colors.blue, get: p => p.mean_request_bytes === null ? null : p.mean_request_bytes / 1024},
+  ], (v, tick) => tick ? numeric(v, 1) : `${numeric(v, 2)} KiB`);
   lineChart(
     "concurrency-chart",
     "Sampled requests currently in flight",
@@ -973,8 +1066,12 @@ async function refresh() {
     const query = new URLSearchParams(selected.absolute
       ? { start_ms: selected.start_ms, end_ms: selected.end_ms }
       : { window: selected.window });
+    const requestedScope = { replica: state.replica };
     for (const key of ["project", "site", "host"])
-      if ($(key).value) query.set(key, $(key).value);
+      if ($(key).value) {
+        requestedScope[key] = $(key).value;
+        query.set(key, $(key).value);
+      }
     if (state.replica) query.set("replica", state.replica);
     const response = await fetch("/api/overview?" + query, {
       headers: state.token ? { Authorization: "Bearer " + state.token } : {},
@@ -997,6 +1094,7 @@ async function refresh() {
     const data = await response.json();
     if (session !== state.session) return false;
     state.data = data;
+    state.appliedScope = requestedScope;
     state.localAccess = data.dashboard_access === "local";
     if (state.localAccess) state.token = "";
     state.error = "";
@@ -1105,6 +1203,7 @@ $("logout").addEventListener("click", () => {
 });
 for (const id of ["project", "site", "host", "window"])
   $(id).addEventListener("change", () => {
+    state.routePage = 0;
     if (id !== "window") state.replica = "";
     if (id === "project") $("site").value = "";
     if (id === "window") { showCustomRange(); savePreferences(); }
@@ -1139,14 +1238,67 @@ document.addEventListener("visibilitychange", () => {
 $("refresh").addEventListener("click", refresh);
 $("clear").addEventListener("click", () => {
   state.replica = "";
+  state.routePage = 0;
   refresh();
 });
-$("sites").addEventListener("click", (event) => {
+$("clear-scope").addEventListener("click", () => {
+  for (const id of ["project", "site", "host"]) $(id).value = "";
+  state.replica = "";
+  state.routePage = 0;
+  refresh();
+});
+for (const id of ["traffic-view", "error-view"]) $(id).addEventListener("change", () => {
+  savePreferences();
+  render();
+});
+for (const id of ["route-search", "route-sort", "route-minimum"])
+  $(id).addEventListener(id === "route-search" ? "input" : "change", () => {
+    state.routePage = 0;
+    if (state.data) routeTable();
+  });
+for (const [id, delta] of [["route-previous", -1], ["route-next", 1]])
+  $(id).addEventListener("click", () => {
+    state.routePage += delta;
+    routeTable();
+  });
+$("dashboard").addEventListener("click", (event) => {
+  const siteButton = event.target.closest("[data-site]");
+  if (siteButton) {
+    const site = state.data.site_options.find(site => site.id === siteButton.dataset.site);
+    if (!site) return;
+    $("project").value = site.project_id;
+    options("site", state.data.site_options.filter(s => s.project_id === site.project_id), "All sites");
+    $("site").value = site.id;
+    state.replica = "";
+    state.routePage = 0;
+    refresh();
+    $("overview").scrollIntoView({block: "start", behavior: "smooth"});
+    $("site").focus({preventScroll: true});
+    return;
+  }
   const button = event.target.closest("[data-replica]");
   if (button) {
     state.replica = button.dataset.replica;
+    state.routePage = 0;
     refresh();
+    $("overview").scrollIntoView({block: "start", behavior: "smooth"});
+    $("clear").hidden = false;
+    $("clear").focus({preventScroll: true});
   }
 });
+const sectionLinks = [...document.querySelectorAll(".sidebar nav a")];
+let navigationFrame;
+addEventListener("scroll", () => {
+  if (navigationFrame) return;
+  navigationFrame = requestAnimationFrame(() => {
+    navigationFrame = null;
+    const active = sectionLinks.filter(link => document.querySelector(link.hash).getBoundingClientRect().top <= 120).at(-1) || sectionLinks[0];
+    for (const link of sectionLinks) {
+      link.classList.toggle("nav-active", link === active);
+      if (link === active) link.setAttribute("aria-current", "location");
+      else link.removeAttribute("aria-current");
+    }
+  });
+}, {passive: true});
 restorePreferences();
 connect();

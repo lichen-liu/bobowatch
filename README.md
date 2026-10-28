@@ -3,8 +3,9 @@
 A small, standalone monitoring tool for multiple projects, sites and replicas.
 One Python process, a local-network dashboard and a local SQL database.
 
-The dashboard shows HTTP request rate, latency bounds, errors, active requests,
-body throughput, endpoints and replica comparisons. The macOS installed runtime
+The dashboard shows HTTP request rate and counts, latency bounds and weighted means,
+slow responses, errors, active requests, body throughput and sizes, searchable
+endpoints and replica comparisons. The macOS installed runtime
 adds a verified five-GiB RAM disk, circular retention, live quota administration
 and explicitly started crash supervision. Installed dashboards open directly on
 your trusted local network without login; app ingestion and local controls retain
@@ -12,6 +13,7 @@ their credentials. One pinned Waitress dependency; no
 external collector suite, frontend build or database server.
 
 **[Installation, deployment, upgrades and Flightrepo rollout](docs/runtime.md).**
+**[Dashboard controls and metric definitions](docs/dashboard.md).**
 
 This is a tested local pilot. Host sampling, public uptime probes, ingestion
 progress and alerting remain future work. Operation is on demand: installation
@@ -73,8 +75,13 @@ have mode 0700.
   foreign keys and a lock preventing two monitoring processes on the same database.
 - Dashboard project/site/host/time filters, replica drill-down, roughly 180 chart
   buckets per selected window, hover/keyboard readouts and togglable chart series.
-- Requests per second, p50/p95/p99 bounds, 4xx/5xx shares, in-flight work, body
-  throughput, response-class mix and endpoint request/error/mean-duration totals.
+- Requests per second or per bucket, p50/p95/p99 bounds, weighted mean duration,
+  responses over one second, 4xx/5xx shares and counts, in-flight work, measured
+  body throughput and mean sizes, and response-class mix with coverage.
+- Endpoint search, minimum request counts, pagination and rankings by traffic,
+  server errors, error rate, mean latency or total response time. Quiet failing
+  or slow routes can appear alongside busy endpoints. One-click site/replica focus
+  and an explicit scope indicator make drill-down easy to clear.
 - Waiting, stale, clock-skew, partial-observation and disconnected states.
 - Consistent online SQLite backups and refusal to overwrite an existing backup.
 
@@ -147,11 +154,19 @@ for contributing and requesting checks.
 
 ## Checks
 
-The suite uses Python's standard-library `unittest`. Core requirements are enough:
+The Python suite uses standard-library `unittest`. Core requirements are enough:
 
 ```sh
 .venv/bin/python -m unittest discover -s tests -v
 ```
+
+Dashboard logic uses Node's built-in test runner, with no npm packages:
+
+```sh
+node --test tests/test_*.cjs
+```
+
+Node is only needed for development checks, not for running BoboWatch.
 
 Optional development tools:
 
