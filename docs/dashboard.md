@@ -5,6 +5,18 @@ name narrow the same overview; the scope line names the selection. **Clear scope
 returns to all projects without changing the time range. On phones, the section
 links near the top jump to charts, endpoints, replicas and events.
 
+The clock button opens a searchable time picker. Quick ranges are grouped into
+minutes, hours, days/weeks and calendar periods. Search by name or shorthand such
+as `2h` or `14d`; press Enter to apply the first match. Rolling presets cover
+30 seconds through 365 days, with intermediate 2/4/8-hour, 2/3/14-day and
+60/180-day choices. On phones, switch between **Quick ranges** and **Custom range**.
+Escape, the close button or a click outside dismisses the picker without applying
+date edits. Use **Apply time range** to commit custom dates.
+
+The adjacent chart-detail control changes grouping. The refresh arrow runs a query
+now; its attached interval selector shows **30s**, **1m**, **5m** or **Off**.
+The download icon exports the complete queried view as JSON.
+
 The time window selects the observations; auto-refresh controls when the browser
 fetches them again. Both default to five minutes. Rolling windows move with each
 refresh. Calendar presets use the browser's timezone, with Monday-start weeks.

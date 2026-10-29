@@ -320,34 +320,130 @@ p {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
-  gap: 10px;
-  margin-bottom: 19px;
+  gap: 12px 16px;
+  margin-bottom: 14px;
 }
-.toolbar label {
+.scope-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.scope-filters label {
   display: grid;
   gap: 5px;
-  min-width: 120px;
-  font-size: 9px;
-  color: #8d99a2;
-}
-.toolbar select {
+  min-width: 0;
   font-size: 10px;
-  min-width: 130px;
-  height: 35px;
+  color: var(--muted);
 }
-.toolbar .time-filter {
-  margin-left: auto;
+.scope-filters select {
+  width: 130px;
+  height: 36px;
+  font-size: 11px;
 }
-.refresh {
-  font-size: 13px;
-  height: 35px;
+.dashboard-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.dashboard-actions > button, .compact-select { height: 36px; }
+.control-icon, .control-chevron { width: 18px; height: 18px; flex: none; }
+.control-chevron { width: 14px; height: 14px; color: var(--muted); pointer-events: none; }
+.time-range-button {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 9px;
+  max-width: 310px;
+  font-size: 12px;
+  font-weight: 550;
+  border-color: #cbd5dc;
 }
-.refresh span {
-  font-size: 10px;
+.time-range-button > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.time-range-button > .control-icon { color: var(--muted); }
+.time-range-button > .control-chevron { margin-left: auto; }
+.time-range-button[aria-expanded="true"] { background: #edf6f3; border-color: var(--teal); }
+.compact-select {
+  position: relative;
+  display: flex;
+  align-items: center;
+  background: var(--paper);
+  border: 1px solid #dce3e8;
+  border-radius: 6px;
 }
+.compact-select > .control-icon { position: absolute; left: 8px; pointer-events: none; color: var(--muted); }
+.compact-select > .control-chevron { position: absolute; right: 8px; }
+.compact-select select {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  padding: 6px 27px 6px 32px;
+  font-size: 11px;
+}
+.compact-select:focus-within { border-color: var(--teal); }
+.detail-filter { width: 150px; }
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  padding: 0;
+  flex: none;
+}
+.refresh-controls { display: flex; }
+.refresh-controls .refresh { border-radius: 6px 0 0 6px; }
+.refresh-filter { border-radius: 0 6px 6px 0; margin-left: -1px; width: 62px; }
+.refresh-filter select { padding-left: 10px; }
+#refresh:disabled .control-icon { animation: refresh-spin 1.4s linear infinite; }
+@keyframes refresh-spin { to { transform: rotate(360deg); } }
+.time-picker {
+  width: min(740px, calc(100vw - 24px));
+  max-width: none;
+  max-height: calc(100dvh - 24px);
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  background: var(--paper);
+  color: var(--ink);
+  border: 1px solid #cbd5dc;
+  border-radius: 9px;
+  box-shadow: 0 12px 48px #18293226, 0 2px 8px #1829320d;
+}
+.time-picker::backdrop { background: #1829320a; }
+body:has(.time-picker[open]) { overflow: hidden; }
+.time-picker-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--line);
+}
+.time-picker-heading h2 { margin: 0; font-size: 14px; font-weight: 650; }
+.time-picker-heading p { margin: 3px 0 0; font-size: 11px; color: var(--muted); }
+.time-picker-heading button { border: 0; color: var(--muted); }
+.time-picker-tabs { display: none; }
+.time-picker-body { display: grid; grid-template-columns: 290px minmax(0, 1fr); }
+.absolute-range-pane, .quick-range-pane { padding: 18px; min-width: 0; }
+.absolute-range-pane { border-right: 1px solid var(--line); }
+.absolute-range-pane h3 { margin: 0 0 5px; font-size: 12px; }
+.picker-hint { font-size: 11px; color: var(--muted); margin: 0 0 18px; line-height: 1.6; }
+.range-search { display: flex; align-items: center; position: relative; margin-bottom: 14px; }
+.range-search > svg { position: absolute; left: 10px; color: var(--muted); pointer-events: none; }
+.range-search input { width: 100%; min-width: 0; padding-left: 34px; font-size: 12px; }
+.quick-ranges { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-content: start; gap: 20px 12px; max-height: 330px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
+.quick-range-group h3 { margin: 0 0 7px; color: var(--muted); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .6px; padding-left: 8px; }
+.quick-range-group button { display: block; width: 100%; border-color: transparent; background: transparent; text-align: left; min-height: 30px; padding: 5px 8px; border-radius: 4px; font-size: 12px; }
+.quick-range-group button:hover { background: #f1f5f7; }
+.quick-range-group button[aria-pressed="true"], .all-history[aria-pressed="true"] { color: #116b5e; background: #e8f4f0; font-weight: 600; }
+.quick-range-group button[aria-pressed="true"]::after { content: "✓"; float: right; margin-left: 4px; }
+.range-empty { margin: 24px 8px; color: var(--muted); font-size: 12px; }
+.all-history { display: flex; justify-content: space-between; align-items: center; width: 100%; margin-top: 14px; padding: 9px 8px; font-size: 12px; border: 0; border-top: 1px solid var(--line); border-radius: 0; }
+.time-picker-footer { display: flex; flex-wrap: wrap; gap: 6px 16px; justify-content: space-between; padding: 11px 18px; margin: 0; font-size: 10px; color: var(--muted); background: #f7f9fa; border-top: 1px solid var(--line); }
 .summary {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -858,13 +954,6 @@ code {
   main {
     padding: 24px 23px;
   }
-  .toolbar label {
-    min-width: 0;
-  }
-  .toolbar select {
-    min-width: 105px;
-    max-width: 150px;
-  }
   .summary {
     gap: 10px;
   }
@@ -949,23 +1038,6 @@ code {
   }
   .summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  .toolbar {
-    flex-wrap: wrap;
-  }
-  .toolbar .time-filter {
-    margin-left: 0;
-  }
-  .toolbar label {
-    flex: 1;
-    min-width: 120px;
-  }
-  .toolbar select {
-    max-width: none;
-    width: 100%;
-  }
-  .toolbar .refresh {
-    margin-left: auto;
   }
   .scope-meta {
     display: none;
@@ -1058,19 +1130,6 @@ code {
   }
   .demo-session {
     display: none;
-  }
-  .toolbar {
-    gap: 9px;
-  }
-  .toolbar label {
-    min-width: calc(50% - 10px);
-  }
-  .toolbar select {
-    font-size: 10px;
-  }
-  .toolbar .refresh {
-    width: 100%;
-    justify-content: center;
   }
   .summary {
     gap: 9px;
@@ -1237,31 +1296,12 @@ code {
   flex: none;
 }
 
-.custom-range {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: end;
-  gap: 12px;
-  padding: 16px;
-  margin-bottom: 12px;
-}
-.custom-range label {
-  display: grid;
-  gap: 6px;
-  flex: 1 1 240px;
-  min-width: 0;
-  font-size: 11px;
-  color: var(--muted);
-}
-.custom-range input {
-  width: 100%;
-  min-width: 0;
-  min-height: 40px;
-  font: inherit;
-}
-.custom-range button { min-height: 40px; background: var(--teal); border-color: var(--teal); color: white; }
-.range-zone, .range-error { flex-basis: 100%; font-size: 11px; }
-.range-error { color: #bb5d69; }
+.custom-range { display: grid; gap: 14px; margin-top: 20px; }
+.custom-range label { display: grid; gap: 7px; min-width: 0; font-size: 11px; color: var(--muted); }
+.custom-range input { width: 100%; min-width: 0; min-height: 38px; font-size: 12px; padding: 7px 9px; }
+.custom-range button { min-height: 38px; background: var(--teal); border-color: var(--teal); color: white; font-size: 12px; }
+.custom-range .picker-hint { margin: 0; }
+.range-error { margin: 0; color: #a93e4e; font-size: 11px; }
 .range-status { font-size: 10px; line-height: 1.7; margin-bottom: 16px; overflow-wrap: anywhere; }
 
 .sr-only {
@@ -1369,7 +1409,7 @@ code {
 .storage-details p { margin-top: 7px; overflow-wrap: anywhere; }
 .chart-note, .hint, .legend, .legend-toggle, .summary p, .site-coverage, .range-status { color: #627680; }
 .chart-note, .hint, .legend, .legend-toggle { font-size: 10px; }
-.toolbar label, .summary .stat-heading, .site-stats small { font-size: 10px; color: #627680; }
+.scope-filters label, .summary .stat-heading, .site-stats small { font-size: 10px; color: #627680; }
 th { font-size: 10px; color: #627680; }
 td { font-size: 11px; }
 .endpoint { font-size: 11px; }
@@ -1392,8 +1432,7 @@ td small { font-size: 9px; color: #627680; }
   .page-size select { font-size: 16px; }
   .heading p { display: none; }
   .mobile-nav a { display: inline-flex; align-items: center; min-height: 44px; }
-  .toolbar .refresh { width: auto; flex: 1; }
-  input, select, .toolbar select, .chart-panel select, .endpoint-tools input, .endpoint-tools select { font-size: 16px; }
+  input, select, .scope-filters select, .chart-panel select, .endpoint-tools input, .endpoint-tools select { font-size: 16px; }
   .chart-panel select { max-width: 200px; }
   .summary .stat-heading { font-size: 10px; }
   .summary strong { font-size: 25px; }
@@ -1415,4 +1454,46 @@ td small { font-size: 9px; color: #627680; }
 @media (pointer: coarse) {
   button, .legend-toggle, .endpoint-site, .focus-site, .replica-button, .investigate, input, select { min-height: 44px; }
   .chart-panel select { min-height: 40px; }
+}
+
+@media (max-width: 850px) {
+  .scope-filters { width: 100%; }
+  .scope-filters label { flex: 1; }
+  .scope-filters select { width: 100%; }
+}
+@media (max-width: 640px) {
+  .time-picker { inset: 12px 12px auto; width: auto; max-height: calc(100dvh - 24px); }
+  .time-picker::backdrop { background: #18293240; }
+  .time-picker-heading { padding: 12px 14px; }
+  .time-picker-heading .icon-button { width: 40px; height: 40px; }
+  .time-picker-tabs { display: flex; gap: 4px; margin: 12px 14px 0; padding: 3px; background: #eef2f4; border-radius: 6px; }
+  .time-picker-tabs button { flex: 1; border: 0; background: transparent; font-size: 12px; }
+  .time-picker-tabs button[aria-pressed="true"] { background: white; box-shadow: 0 1px 3px #18293217; color: #116b5e; }
+  .time-picker-body { display: block; }
+  .absolute-range-pane, .quick-range-pane { padding: 16px 14px; border: 0; }
+  .time-picker[data-view="quick"] .absolute-range-pane, .time-picker[data-view="custom"] .quick-range-pane { display: none; }
+  .quick-ranges { max-height: min(360px, calc(100dvh - 312px)); gap: 20px 10px; }
+  .quick-range-group button { min-height: 38px; }
+  .range-search input, .custom-range input { font-size: 16px; }
+  .time-picker-footer { padding: 10px 14px; font-size: 10px; }
+}
+@media (max-width: 520px) {
+  .scope-filters { gap: 8px; }
+  .scope-filters label { flex: 1 1 calc(50% - 4px); }
+  .scope-filters label:last-child { flex-basis: 100%; }
+  .dashboard-actions { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) auto 40px; gap: 8px; }
+  .time-range-button { grid-column: 1 / -1; width: 100%; max-width: none; height: 40px; font-size: 13px; }
+  .detail-filter { width: auto; }
+  .compact-select select { font-size: 13px; }
+  .dashboard-actions .icon-button { width: 40px; height: 40px; }
+  .dashboard-actions .compact-select { height: 40px; }
+  #clear { grid-column: 1 / -1; }
+}
+@media (pointer: coarse) {
+  .dashboard-actions > button, .dashboard-actions .compact-select, .refresh-controls .icon-button, .time-picker-heading .icon-button { min-height: 44px; }
+  .quick-range-group button { min-height: 44px; }
+  .compact-select select { font-size: 16px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  #refresh:disabled .control-icon { animation: none; }
 }

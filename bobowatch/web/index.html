@@ -92,91 +92,138 @@
           </p>
           <p id="notice" class="notice" role="status" hidden></p>
           <section class="toolbar" aria-label="Dashboard filters">
-            <label
-              >Project<select id="project">
-                <option value="">All projects</option>
-              </select></label
-            >
-            <label
-              >Site<select id="site">
-                <option value="">All sites</option>
-              </select></label
-            >
-            <label
-              >Host<select id="host">
-                <option value="">All hosts</option>
-              </select></label
-            >
-            <label class="time-filter"
-              >Time window<select id="window">
-                <optgroup label="Rolling windows">
-                  <option value="30">Last 30 seconds</option>
-                  <option value="60">Last 1 minute</option>
-                  <option value="300" selected>Last 5 minutes</option>
-                  <option value="900">Last 15 minutes</option>
-                  <option value="1800">Last 30 minutes</option>
-                  <option value="3600">Last hour</option>
-                  <option value="21600">Last 6 hours</option>
-                  <option value="43200">Last 12 hours</option>
-                  <option value="86400">Last 24 hours</option>
-                  <option value="604800">Last 7 days</option>
-                  <option value="2592000">Last 30 days</option>
-                  <option value="7776000">Last 90 days</option>
-                </optgroup>
-                <optgroup label="Calendar periods">
-                  <option value="today">Today</option>
-                  <option value="yesterday">Yesterday</option>
-                  <option value="this-week">This week</option>
-                  <option value="last-week">Last week</option>
-                  <option value="this-month">This month</option>
-                  <option value="last-month">Last month</option>
-                  <option value="this-year">This year</option>
-                  <option value="last-year">Last year</option>
-                </optgroup>
-                <option value="custom">Custom range…</option>
-                <option value="all">All retained history</option>
-              </select></label
-            >
-            <label class="refresh-filter"
-              >Auto-refresh<select id="auto-refresh">
-                <option value="30">Every 30 seconds</option>
-                <option value="60">Every 1 minute</option>
-                <option value="300" selected>Every 5 minutes</option>
-                <option value="0">Off</option>
-              </select></label
-            >
-            <label class="detail-filter">Chart detail<select id="chart-detail">
-              <option value="auto">Automatic grouping</option>
-              <option value="1">Every timestamp</option>
-              <option value="1000">1 second</option>
-              <option value="15000">15 seconds</option>
-              <option value="60000">1 minute</option>
-              <option value="300000">5 minutes</option>
-              <option value="3600000">1 hour</option>
-              <option value="86400000">1 day</option>
-            </select></label>
-            <button id="clear" hidden>Clear replica</button
-            ><button id="refresh" class="refresh" title="Refresh now">
-              ↻ <span>Refresh</span>
-            </button>
-            <button id="export-view" disabled title="Download all queried totals, chart data, endpoints and events, regardless of table page">Download JSON</button>
+            <div class="scope-filters">
+              <label
+                >Project<select id="project">
+                  <option value="">All projects</option>
+                </select></label
+              >
+              <label
+                >Site<select id="site">
+                  <option value="">All sites</option>
+                </select></label
+              >
+              <label
+                >Host<select id="host">
+                  <option value="">All hosts</option>
+                </select></label
+              >
+            </div>
+            <select id="window" hidden aria-label="Time window">
+              <optgroup label="Minutes">
+                <option value="30">Last 30 seconds</option>
+                <option value="60">Last 1 minute</option>
+                <option value="120">Last 2 minutes</option>
+                <option value="300" selected>Last 5 minutes</option>
+                <option value="600">Last 10 minutes</option>
+                <option value="900">Last 15 minutes</option>
+                <option value="1800">Last 30 minutes</option>
+                <option value="2700">Last 45 minutes</option>
+              </optgroup>
+              <optgroup label="Hours">
+                <option value="3600">Last 1 hour</option>
+                <option value="7200">Last 2 hours</option>
+                <option value="10800">Last 3 hours</option>
+                <option value="14400">Last 4 hours</option>
+                <option value="21600">Last 6 hours</option>
+                <option value="28800">Last 8 hours</option>
+                <option value="43200">Last 12 hours</option>
+                <option value="86400">Last 24 hours</option>
+              </optgroup>
+              <optgroup label="Days and weeks">
+                <option value="172800">Last 2 days</option>
+                <option value="259200">Last 3 days</option>
+                <option value="604800">Last 7 days</option>
+                <option value="1209600">Last 14 days</option>
+                <option value="2592000">Last 30 days</option>
+                <option value="5184000">Last 60 days</option>
+                <option value="7776000">Last 90 days</option>
+                <option value="15552000">Last 180 days</option>
+                <option value="31536000">Last 365 days</option>
+              </optgroup>
+              <optgroup label="Calendar periods">
+                <option value="today">Today</option>
+                <option value="yesterday">Yesterday</option>
+                <option value="this-week">This week</option>
+                <option value="last-week">Last week</option>
+                <option value="this-month">This month</option>
+                <option value="last-month">Last month</option>
+                <option value="this-year">This year</option>
+                <option value="last-year">Last year</option>
+              </optgroup>
+              <option value="custom">Custom range</option>
+              <option value="all">All retained history</option>
+            </select>
+            <div class="dashboard-actions" role="group" aria-label="Time and data controls">
+              <button id="time-range-button" class="time-range-button" aria-haspopup="dialog" aria-controls="time-picker" aria-expanded="false">
+                <svg class="control-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="10" cy="10" r="7.1"/><path d="M10 5.5V10l3 1.8"/></svg><span id="time-range-label">Last 5 minutes</span><svg class="control-chevron" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m6 8 4 4 4-4"/></svg>
+              </button>
+              <label class="compact-select detail-filter" title="Chart detail: grouping affects charts only; every matching record is queried">
+                <svg class="control-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M4 15V9m6 6V4m6 11v-8"/></svg><span class="sr-only">Chart detail</span><select id="chart-detail">
+                  <option value="auto">Auto detail</option>
+                  <option value="1">Every timestamp</option>
+                  <option value="1000">1 second</option>
+                  <option value="15000">15 seconds</option>
+                  <option value="60000">1 minute</option>
+                  <option value="300000">5 minutes</option>
+                  <option value="3600000">1 hour</option>
+                  <option value="86400000">1 day</option>
+                </select><svg class="control-chevron" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m6 8 4 4 4-4"/></svg>
+              </label>
+              <div class="refresh-controls" role="group" aria-label="Refresh controls">
+                <button id="refresh" class="refresh icon-button" title="Refresh now" aria-label="Refresh now"><svg class="control-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M16.5 8a6.8 6.8 0 1 0-1 6.1M16.5 3.5V8H12"/></svg></button>
+                <label class="compact-select refresh-filter" title="Auto-refresh interval">
+                  <span class="sr-only">Auto-refresh</span><select id="auto-refresh">
+                    <option value="30">30s</option>
+                    <option value="60">1m</option>
+                    <option value="300" selected>5m</option>
+                    <option value="0">Off</option>
+                  </select><svg class="control-chevron" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m6 8 4 4 4-4"/></svg>
+                </label>
+              </div>
+              <button id="export-view" class="icon-button" disabled aria-label="Download JSON" title="Download all queried totals, chart data, endpoints and events"><svg class="control-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M10 2.5v10m-3.5-3.5L10 12.5 13.5 9M3.5 12.5v4h13v-4"/></svg></button>
+              <button id="clear" hidden>Clear replica</button>
+            </div>
           </section>
+          <dialog id="time-picker" class="time-picker" aria-labelledby="time-picker-title" data-view="quick">
+            <header class="time-picker-heading">
+              <div><h2 id="time-picker-title">Time range</h2><p id="time-picker-current">Last 5 minutes</p></div>
+              <button id="close-time-picker" class="icon-button" aria-label="Close time picker"><svg class="control-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15"/></svg></button>
+            </header>
+            <div class="time-picker-tabs" role="group" aria-label="Time range mode">
+              <button id="quick-range-tab" aria-controls="quick-range-pane" aria-pressed="true">Quick ranges</button>
+              <button id="custom-range-tab" aria-controls="absolute-range-pane" aria-pressed="false">Custom range</button>
+            </div>
+            <div class="time-picker-body">
+              <section id="absolute-range-pane" class="absolute-range-pane" aria-label="Absolute time range">
+                <h3>Absolute time range</h3>
+                <p class="picker-hint">Choose exact dates and times.</p>
+                <form id="custom-range" class="custom-range">
+                  <label for="range-start">From
+                    <input id="range-start" type="datetime-local" step="1" min="1970-01-01T00:00" required />
+                  </label>
+                  <label for="range-end">To
+                    <input id="range-end" type="datetime-local" step="1" min="1970-01-01T00:00" required />
+                  </label>
+                  <p id="range-error" class="range-error" role="alert" hidden></p>
+                  <button class="primary" type="submit">Apply time range</button>
+                  <p class="picker-hint">A custom range stays fixed when the dashboard refreshes.</p>
+                </form>
+              </section>
+              <section id="quick-range-pane" class="quick-range-pane" aria-label="Quick time ranges">
+                <label class="range-search"><svg class="control-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5"/><path d="m12.5 12.5 4 4"/></svg><span class="sr-only">Search time ranges</span><input id="range-search" type="search" placeholder="Search ranges, e.g. 2h or 7d" autocomplete="off" /></label>
+                <div id="quick-ranges" class="quick-ranges"></div>
+                <p id="range-empty" class="range-empty" role="status" hidden>No matching ranges.</p>
+                <button id="all-history" class="all-history" data-range="all" aria-pressed="false">All retained history <span aria-hidden="true">→</span></button>
+              </section>
+            </div>
+            <footer class="time-picker-footer"><span id="range-zone"></span><span>Rolling ranges end at now</span></footer>
+          </dialog>
           <p id="query-status" class="query-status" role="status"></p>
           <div id="scope-status" class="scope-status" aria-live="polite">
             <span id="scope-label">All projects</span>
             <button id="clear-scope" hidden>Clear scope</button>
           </div>
-          <form id="custom-range" class="custom-range panel" hidden>
-            <label for="range-start">From
-              <input id="range-start" type="datetime-local" step="1" min="1970-01-01T00:00" required />
-            </label>
-            <label for="range-end">To
-              <input id="range-end" type="datetime-local" step="1" min="1970-01-01T00:00" required />
-            </label>
-            <button class="primary" type="submit">Apply range</button>
-            <p id="range-zone" class="range-zone"></p>
-            <p id="range-error" class="range-error" role="alert" hidden></p>
-          </form>
           <p id="range-status" class="range-status" aria-live="polite"></p>
           <section
             id="summary"
