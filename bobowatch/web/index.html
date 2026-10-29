@@ -21,6 +21,7 @@
         <a href="#overview" class="nav-active"
           ><span aria-hidden="true">▦</span> HTTP overview</a
         >
+        <a href="#service-overview"><span aria-hidden="true">▥</span> Compare sites</a>
         <a href="#performance"><span aria-hidden="true">⌁</span> Performance</a>
         <a href="#replicas"
           ><span aria-hidden="true">▤</span> Sites &amp; replicas</a
@@ -81,7 +82,7 @@
           </section>
           <nav class="mobile-nav" aria-label="Jump to dashboard section">
             <a href="#performance">Charts</a><a href="#routes">Endpoints</a>
-            <a href="#replicas">Replicas</a><a href="#event-section">Events</a>
+            <a href="#service-overview">Sites</a><a href="#event-section">Events</a>
           </nav>
           <p id="demo-banner" class="demo-banner" hidden>
             <span class="demo-label">DEMO WORKSPACE</span
@@ -235,11 +236,43 @@
             <div><strong>Measurement coverage</strong><p id="coverage-note"></p></div>
             <span id="telemetry-status" class="pill neutral"></span>
           </section>
+          <section id="service-overview" class="panel service-overview" aria-label="Compare selected sites">
+            <div class="panel-heading">
+              <div><span class="eyebrow">01 / FIND THE IMPACT</span><h2>Compare sites</h2></div>
+              <div class="service-controls"><a href="#replicas">Replica details ↗</a>
+                <label class="compact-select diagnostic-select"><span class="sr-only">Compare sites by</span><select id="service-sort">
+                  <option value="errors">Most 5xx responses</option>
+                  <option value="requests">Most requests</option>
+                  <option value="error-rate">Highest 5xx rate</option>
+                  <option value="mean">Slowest mean</option>
+                  <option value="p95">Highest p95 bound</option>
+                  <option value="slow">Highest >1s share</option>
+                </select><svg class="control-chevron" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m6 8 4 4 4-4"/></svg></label>
+              </div>
+            </div>
+            <div id="service-comparison" class="service-comparison"></div>
+            <p class="comparison-note">Observed totals for the selected window. Telemetry describes reporting, not public uptime.</p>
+          </section>
           <section
             id="performance"
             class="performance"
             aria-label="HTTP performance charts"
           >
+            <article class="panel heatmap-panel" aria-label="Latency over time">
+              <div class="panel-heading">
+                <div><span class="eyebrow">02 / LOCATE THE CHANGE</span><h2>Latency over time</h2></div>
+                <label class="compact-select diagnostic-select"><span class="sr-only">Heatmap color</span><select id="heatmap-mode">
+                  <option value="count">Request count</option>
+                  <option value="share">% within time column</option>
+                </select><svg class="control-chevron" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m6 8 4 4 4-4"/></svg></label>
+              </div>
+              <div id="latency-bands" class="latency-bands" aria-label="Response duration bands"></div>
+              <div id="duration-heatmap" class="heatmap-plot"></div>
+              <p id="heatmap-readout" class="heatmap-readout" role="status"></p>
+              <div class="heatmap-footer"><p id="heatmap-note"></p><div class="heatmap-key"><span id="heatmap-key-min">1</span><i aria-hidden="true"></i><span id="heatmap-key-max"></span><span class="missing-key" aria-hidden="true"></span><span>No samples</span></div></div>
+              <details class="heatmap-method"><summary>How to read this chart</summary><p>Rows are fixed duration bins. Hatched gaps have no snapshots; pale cells have zero recorded requests in that bin. The bottom strip marks partial or clock-skewed telemetry. Counts belong to the observation's completion group, including observations spanning a longer reporting interval. Time columns combine every source histogram; coarse source groups stay whole.</p></details>
+              <div id="quality-summary" class="quality-summary" aria-label="Observation quality"></div>
+            </article>
             <article class="panel chart-panel">
               <div class="panel-heading">
                 <div>
@@ -355,7 +388,7 @@
             <article id="routes" class="panel">
               <div class="panel-heading">
                 <div>
-                  <span class="eyebrow">WHERE THE WORK HAPPENS</span>
+                  <span class="eyebrow">03 / TRACE THE WORK</span>
                   <h2>Endpoint explorer</h2>
                 </div>
                 <span class="chart-note">All recorded route templates</span>

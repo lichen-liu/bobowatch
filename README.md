@@ -75,11 +75,17 @@ have mode 0700.
   foreign keys and a lock preventing two monitoring processes on the same database.
 - Dashboard project/site/host/time filters, replica drill-down, roughly 180 chart
   buckets per selected window, hover/keyboard readouts and togglable chart series.
+- A sortable cross-site comparison of observed traffic, 5xx impact, weighted
+  mean/p95 duration, slow-response share and telemetry reporting.
+- A latency-over-time heatmap with every histogram count, responsive display
+  grouping, count/share colors and exact keyboard/touch readouts. Source-level
+  partial, clock-skew and extended-HTTP sample counts survive SQL grouping.
 - Requests per second or per bucket, p50/p95/p99 bounds, weighted mean duration,
   responses over one second, 4xx/5xx shares and counts, in-flight work, measured
   body throughput and mean sizes, and response-class mix with coverage.
 - Endpoint search, minimum request counts, pagination and rankings by traffic,
-  server errors, error rate, mean latency or total response time. Quiet failing
+  server errors, error rate, mean latency or total response time. Contribution shares
+  use all instrumented endpoints before table filters or pagination. Quiet failing
   or slow routes can appear alongside busy endpoints. One-click site/replica focus
   and an explicit scope indicator make drill-down easy to clear.
 - Waiting, stale, clock-skew, partial-observation and disconnected states.

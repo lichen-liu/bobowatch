@@ -212,3 +212,22 @@ invented in browser chart code. Existing runtimes are not backfilled. The import
 path refuses non-demo runtimes, and the HTTP API does not accept fixture timestamp
 controls. Demo labels remain visible. Neither seeding nor the live sample workload
 starts an OS service or enables auto-start.
+
+
+## Diagnostic history fields
+
+Overview HTTP summaries include integer `duration_us` and
+`quality = {snapshots, partial, skewed, extended_http}`. Chart points additionally
+include `duration_buckets`, the same 14 noncumulative bucket counts used by the
+whole-window histogram, and the source-level `quality` counts. Existing fields,
+including `snapshot_count`, retain their semantics. SQL grouping sums partial and
+skewed source flags; taking only a maximum flag per chart group would undercount.
+These additive response fields require no producer change or database migration.
+
+The heatmap's client display grouping uses epoch-aligned multiples of the API
+bucket size. It combines all compatible source bins and quality counts without
+splitting a coarse API group, interpolating missing measurements or changing query
+totals. The display's pixel width changes the number of visible columns only;
+`Every timestamp` and JSON exports continue to include every returned timestamp.
+Endpoint contribution denominators are computed before browser table filtering,
+so an isolated row keeps its share of the full instrumented endpoint scope.
