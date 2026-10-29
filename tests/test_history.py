@@ -240,6 +240,77 @@ class HistoryTests(unittest.TestCase):
             self.assertIn("/shared", {r["route"] for r in replica["http"]["routes"]})
             self.assertEqual(len(replica["http"]["routes"]), 21)
 
+    def test_diagnostic_source_counts_and_histograms_survive_grouping_and_retirement(self):
+        legacy = self.monitor(started=self.now - 200000)
+        for duration, age, elapsed in (
+            (0.1, 90000, 20000),
+            (0.2, 70000, 80000),
+            (2, 50000, 140000),
+        ):
+            legacy.record_request(duration)
+            self.ingest([self.payload(legacy, self.now - age, elapsed, legacy=True)])
+        extended = self.monitor("flights-r02", started=self.now - 150000)
+        for index, (duration, age) in enumerate(((0.005, 60000), (0.5, 40000), (1, 20000)), 1):
+            extended.record_request(duration)
+            self.ingest(
+                [self.payload(extended, self.now - age, index * 15000)],
+                skew=60000 if index > 1 else 0,
+            )
+        retired = self.monitor("budget-r01", started=self.now - 100000)
+        retired.record_request(3)
+        self.ingest([self.payload(retired, self.now - 15000, 80000)], skew=60000)
+        self.store.reload_inventory(
+            replace(
+                self.config,
+                replicas=tuple(
+                    dict(r, retired=r["id"] == "budget-r01") for r in self.config.replicas
+                ),
+            )
+        )
+        expected_quality = {"snapshots": 7, "partial": 3, "skewed": 3, "extended_http": 4}
+        expected_buckets = [1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0]
+        # One large time group must retain three flagged observations, rather
+        # than count a boolean MAX(partial) group as one or all of its samples.
+        for resolution in (1, 15000, 300000, 86400000):
+            with self.subTest(bucket_ms=resolution):
+                data = self.overview(window="all", bucket_ms=resolution)
+                self.assertEquivalent(
+                    self.overview(raw=True, window="all", bucket_ms=resolution), data
+                )
+                metrics = data["http"]
+                self.assertEqual(metrics["duration_us"], 6_805_000)
+                self.assertEqual(metrics["quality"], expected_quality)
+                self.assertEqual(metrics["snapshot_count"], expected_quality["snapshots"])
+                self.assertEqual(metrics["buckets"], expected_buckets)
+                self.assertEqual(
+                    [
+                        sum(point["duration_buckets"][i] for point in data["charts"])
+                        for i in range(14)
+                    ],
+                    expected_buckets,
+                )
+                for key, count in expected_quality.items():
+                    self.assertEqual(sum(point["quality"][key] for point in data["charts"]), count)
+                    self.assertEqual(
+                        sum(site["http"]["quality"][key] for site in data["sites"]), count
+                    )
+                    self.assertEqual(
+                        sum(
+                            replica["http"]["quality"][key]
+                            for site in data["sites"]
+                            for replica in site["replicas"]
+                        ),
+                        count,
+                    )
+                old = next(site for site in data["sites"] if site["id"] == "budget")
+                self.assertEqual(old["http"]["duration_us"], 3_000_000)
+                self.assertEqual(
+                    old["http"]["quality"],
+                    {"snapshots": 1, "partial": 1, "skewed": 1, "extended_http": 1},
+                )
+                self.assertEqual(old["replicas"][0]["status"], "retired")
+                self.assertIsNone(old["current"]["rps"])
+
     def test_equal_observation_timestamps_choose_the_newest_run_for_live_gauges(self):
         old = self.monitor(started=self.now - 30000)
         for _ in range(5):
@@ -351,6 +422,13 @@ class HistoryTests(unittest.TestCase):
 
     def test_empty_range_and_inventory_do_not_create_observations(self):
         self.assertEquivalent(self.overview(raw=True), self.overview())
+        data = self.overview()
+        self.assertEqual(data["http"]["duration_us"], 0)
+        self.assertEqual(
+            data["http"]["quality"],
+            {"snapshots": 0, "partial": 0, "skewed": 0, "extended_http": 0},
+        )
+        self.assertEqual(data["charts"], [])
         with closing(self.store._connect()) as conn:
             self.assertEqual(aggregate_history(conn, [], 0, self.now, 5000), ([], {}))
 

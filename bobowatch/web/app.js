@@ -38,6 +38,8 @@ function restorePreferences() {
     if (["rate", "count"].includes(saved?.traffic)) $("traffic-view").value = saved.traffic;
     if (["rate", "count"].includes(saved?.errors)) $("error-view").value = saved.errors;
     if (chartDetails.has(saved?.detail)) $("chart-detail").value = saved.detail;
+    if (["count", "share"].includes(saved?.heatmap)) $("heatmap-mode").value = saved.heatmap;
+    if (["requests", "errors", "error-rate", "mean", "p95", "slow"].includes(saved?.serviceSort)) $("service-sort").value = saved.serviceSort;
   } catch {
     // Storage may be unavailable or contain invalid data. Keep the defaults.
   }
@@ -57,6 +59,8 @@ function savePreferences() {
         traffic: $("traffic-view").value,
         errors: $("error-view").value,
         detail: $("chart-detail").value,
+        heatmap: $("heatmap-mode").value,
+        serviceSort: $("service-sort").value,
       }),
     );
   } catch {
@@ -406,23 +410,24 @@ function lineChart(id, title, series, format) {
         y: pos + 3,
         "text-anchor": "end",
         fill: "#a0adb6",
-        "font-size": 8,
+        "font-size": 10,
       },
       format(value, true),
     );
   }
-  for (let i = 0; i < 5; i++)
+  const tickCount = width < 450 ? 3 : 5;
+  for (let i = 0; i < tickCount; i++)
     shape(
       svg,
       "text",
       {
-        x: left + (i * (right - left)) / 4,
+        x: left + (i * (right - left)) / (tickCount - 1),
         y: 165,
-        "text-anchor": i === 0 ? "start" : i === 4 ? "end" : "middle",
+        "text-anchor": i === 0 ? "start" : i === tickCount - 1 ? "end" : "middle",
         fill: "#a0adb6",
-        "font-size": 8,
+        "font-size": 10,
       },
-      axisClock(start + ((end - start) * i) / 4),
+      axisClock(start + ((end - start) * i) / (tickCount - 1)),
     );
   const gapMs = Math.max(state.data.bucket_seconds, state.data.sample_seconds) * 1800;
   shown.forEach((line, index) => {
@@ -586,6 +591,174 @@ function lineChart(id, title, series, format) {
       }),
     );
 }
+function serviceComparison() {
+  const host = $("service-comparison");
+  const sites = BoboWatchMetrics.compareSites(state.data.sites, $("service-sort").value);
+  if (!sites.length) {
+    host.replaceChildren(el("p", "No sites in this scope. Adjust the filters to compare sites.", "empty"));
+    return;
+  }
+  const rows = sites.map(site => {
+    const metrics = site.http, q = metrics.quality;
+    const active = site.replicas.filter(r => !r.retired);
+    const fresh = active.filter(r => r.status === "fresh").length;
+    const status = state.error ? "Updates unavailable" : state.data.historical
+      ? metrics.snapshot_count ? "Recorded" : "No observations"
+      : !active.length ? "Retired site" : `${fresh}/${active.length} reporting`;
+    const focus = el("button", `${site.title} ↗`, "compare-site");
+    focus.dataset.site = site.id;
+    focus.setAttribute("aria-label", `Focus site ${site.title}`);
+    const identity = append(el("td"), focus, el("small", `${site.project_title} · ${site.environment}`));
+    const cell = (label, value, detail, cls = "") => {
+      const td = append(el("td", undefined, `numeric ${cls}`), el("strong", value));
+      td.dataset.label = label;
+      if (detail) td.append(el("small", detail));
+      return td;
+    };
+    const traffic = cell("Requests", number(metrics.requests), `${percent(metrics.requests, state.data.http.requests)} of selected traffic`);
+    const track = el("span", undefined, "comparison-track"), fill = el("i");
+    fill.style.width = `${state.data.http.requests ? metrics.requests / state.data.http.requests * 100 : 0}%`;
+    track.append(fill); traffic.append(track);
+    const telemetry = append(el("td", undefined, "compare-telemetry"), badge(status,
+      state.error || !state.data.historical && fresh < active.length ? "warning" : "neutral"));
+    telemetry.dataset.label = "Telemetry";
+    telemetry.append(el("small", `${number(metrics.snapshot_count)} samples${q.partial ? ` · ${number(q.partial)} partial` : ""}${q.skewed ? ` · ${number(q.skewed)} skewed` : ""}`));
+    return append(el("tr", undefined, "service-row"), identity, traffic,
+      cell("5xx responses", number(metrics.errors), `${percent(metrics.errors, metrics.requests)} of requests`, metrics.errors ? "error-number" : ""),
+      cell("Mean response", metrics.mean_ms === null ? "—" : `${numeric(metrics.mean_ms)} ms`, "Weighted mean"),
+      cell("p95 bound", latency(metrics.latency.p95), "Histogram bound"),
+      cell("Responses >1s", number(metrics.slow_requests), `${percent(metrics.slow_requests, metrics.requests)} of requests`), telemetry);
+  });
+  const comparison = table(["Site / project", "Requests", "5xx responses", "Mean response", "p95 bound", ">1s", "Telemetry"], rows);
+  comparison.setAttribute("role", "table");
+  for (const group of comparison.querySelectorAll("thead,tbody")) group.setAttribute("role", "rowgroup");
+  for (const row of comparison.querySelectorAll("tr")) row.setAttribute("role", "row");
+  for (const cell of comparison.querySelectorAll("th,td")) cell.setAttribute("role", cell.tagName === "TH" ? "columnheader" : "cell");
+  host.replaceChildren(comparison);
+}
+const durationLimits = [5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 30000, 120000];
+const durationLabel = value => value >= 1000 ? `${numeric(value / 1000, 1)} s` : `${number(value)} ms`;
+function durationInterval(index) {
+  if (!index) return `0–${durationLabel(durationLimits[0])}`;
+  if (index === durationLimits.length) return `>${durationLabel(durationLimits.at(-1))}`;
+  return `>${durationLabel(durationLimits[index - 1])} to ≤${durationLabel(durationLimits[index])}`;
+}
+function latencyHeatmap() {
+  const data = state.data, metrics = data.http, host = $("duration-heatmap");
+  const focused = host.contains(document.activeElement);
+  const width = Math.max(300, Math.min(1200, host.clientWidth - 2));
+  const left = 62, right = width - 12, top = 14, rowHeight = 13, bottom = top + 14 * rowHeight;
+  const columns = BoboWatchMetrics.latencyHeatmap(data.charts, {
+    start: data.range_start_ms, end: data.range_end_ms,
+    columns: Math.max(1, Math.floor((right - left) / 6)),
+    bucket_ms: Math.max(1, Math.round(data.bucket_seconds * 1000)),
+  });
+  const share = $("heatmap-mode").value === "share";
+  const total = metrics.buckets.reduce((sum, value) => sum + value, 0);
+  const counts = [metrics.buckets.slice(0, 5), metrics.buckets.slice(5, 8), metrics.buckets.slice(8)]
+    .map(bins => bins.reduce((sum, value) => sum + value, 0));
+  $("latency-bands").replaceChildren(...counts.map((count, index) => {
+    const band = el("div", undefined, `latency-band band-${index}`);
+    append(band, el("span", ["≤100 ms", ">100 ms to ≤1 s", ">1 s"][index]),
+      el("strong", percent(count, total)), el("small", `${number(count)} requests`));
+    const track = el("span", undefined, "band-track"), fill = el("i");
+    fill.style.width = `${total ? count / total * 100 : 0}%`; track.append(fill); band.append(track);
+    return band;
+  }));
+  const q = metrics.quality;
+  $("quality-summary").replaceChildren(...[
+    [number(q.snapshots), "source observations", "Each retained snapshot is counted. Many source observations can contribute to one chart group."],
+    [number(q.partial), "partial observations", "Source observations flagged partial, including baselines or long reporting intervals. This can overlap clock skew."],
+    [number(q.skewed), "clock-skewed observations", "Source observations whose timestamps differ too far from receipt time. This can overlap partial observations."],
+    [percent(q.extended_http, q.snapshots), "extended HTTP samples", `${number(q.extended_http)} of ${number(q.snapshots)} snapshots include status, endpoint and body-size fields. Request-weighted coverage appears above.`],
+  ].map(([value, label, title]) => {
+    const item = append(el("div"), el("strong", value), el("span", label)); item.title = title; return item;
+  }));
+  const svg = svgNode("Request duration over time. Left and right arrows move through time; up and down arrows move through duration bins.", `0 0 ${width} ${bottom + 47}`);
+  svg.setAttribute("tabindex", "0");
+  svg.setAttribute("aria-describedby", "heatmap-readout heatmap-note");
+  const defs = shape(svg, "defs", {});
+  const pattern = shape(defs, "pattern", {id: "heatmap-missing", width: 6, height: 6, patternUnits: "userSpaceOnUse"});
+  shape(pattern, "rect", {width: 6, height: 6, fill: "#f0f3f5"});
+  shape(pattern, "path", {d: "M-1 1L1 -1M0 6L6 0M5 7L7 5", stroke: "#dce4e9", "stroke-width": 1});
+  shape(svg, "rect", {x: left, y: top, width: right-left, height: bottom-top, fill: "url(#heatmap-missing)"});
+  let maximum = 0;
+  for (const column of columns) for (const value of column.buckets) maximum = Math.max(maximum, value);
+  const palette = [[222, 242, 238], [129, 202, 196], [48, 153, 165], [30, 102, 128], [24, 58, 86]];
+  const color = fraction => {
+    const at = Math.min(palette.length - 1, Math.max(0, fraction) * (palette.length - 1));
+    const index = Math.min(palette.length - 2, Math.floor(at)), part = at - index;
+    return `rgb(${palette[index].map((value, channel) => Math.round(value + (palette[index + 1][channel] - value) * part)).join(",")})`;
+  };
+  const xAt = at => left + (at - data.range_start_ms) / (data.range_end_ms - data.range_start_ms) * (right - left);
+  columns.forEach((column, index) => {
+    if (!column.observed) return;
+    const x = xAt(column.start_ms), cellWidth = xAt(column.end_ms) - x;
+    shape(svg, "rect", {x, y: top, width: cellWidth, height: bottom-top, fill: "#f8fbfc"});
+    column.buckets.forEach((count, bin) => {
+      if (!count) return;
+      const intensity = share ? count / column.requests : Math.log1p(count) / Math.log1p(maximum);
+      shape(svg, "rect", {x, y: top + (13-bin)*rowHeight, width: Math.max(.1, cellWidth - .35), height: rowHeight - .5,
+        fill: color(intensity)});
+    });
+    shape(svg, "rect", {x, y: bottom+5, width: Math.max(.1, cellWidth - .35), height: 4,
+      fill: column.quality.skewed ? "#b67c25" : column.partial ? "#d6b26b" : "#7cb9ae"});
+  });
+  for (const bin of [0, 2, 4, 6, 7, 9, 11, 13]) {
+    const label = bin === 13 ? ">120 s" : `≤${durationLabel(durationLimits[bin])}`;
+    shape(svg, "text", {x: left-9, y: top+(13-bin)*rowHeight+9, "text-anchor": "end", fill: "#627680", "font-size": 10}, label);
+  }
+  const tickCount = width < 600 ? 3 : 5;
+  for (let i = 0; i < tickCount; i++) shape(svg, "text", {
+    x: left+(right-left)*i/(tickCount-1), y: bottom+29, "text-anchor": i===0?"start":i===tickCount-1?"end":"middle", fill: "#627680", "font-size": 10,
+  }, axisClock(data.range_start_ms+(data.range_end_ms-data.range_start_ms)*i/(tickCount-1)));
+  if (!q.snapshots) shape(svg, "text", {x:(left+right)/2,y:top+(bottom-top)/2,"text-anchor":"middle",fill:"#526875","font-size":12}, "No retained observations in this range");
+  const marker = shape(svg, "rect", {x:left,y:top,width:1,height:rowHeight,fill:"none",stroke:"#203b4b","stroke-width":1.5,"pointer-events":"none",visibility:"hidden"});
+  let selected = Math.max(0, columns.findLastIndex(column => column.observed)), bin = 7;
+  const inspect = () => {
+    const column = columns[selected];
+    marker.setAttribute("x", xAt(column.start_ms)); marker.setAttribute("width", xAt(column.end_ms)-xAt(column.start_ms)); marker.setAttribute("y", top+(13-bin)*rowHeight); marker.setAttribute("visibility", "visible");
+    const interval = `${rangeStamp(column.start_ms)} → ${rangeStamp(column.end_ms)}`;
+    $("heatmap-readout").textContent = !column.observed
+      ? `${interval} · No metric snapshots. Request counts are unknown.`
+      : `${interval} · ${durationInterval(bin)}: ${number(column.buckets[bin])} requests · ${percent(column.buckets[bin], column.requests)} of ${number(column.requests)} completed requests · ${number(column.quality.snapshots)} observations${column.partial ? " · Partial fleet/interval coverage" : ""}${column.quality.skewed ? ` · ${number(column.quality.skewed)} clock-skewed` : ""}`;
+  };
+  svg.addEventListener("focus", inspect);
+  svg.addEventListener("keydown", event => {
+    if (!["ArrowLeft","ArrowRight","ArrowUp","ArrowDown","Home","End"].includes(event.key)) return;
+    event.preventDefault();
+    if (event.key === "ArrowLeft") selected = Math.max(0, selected-1);
+    if (event.key === "ArrowRight") selected = Math.min(columns.length-1, selected+1);
+    if (event.key === "ArrowUp") bin = Math.min(13, bin+1);
+    if (event.key === "ArrowDown") bin = Math.max(0, bin-1);
+    if (event.key === "Home") selected = 0;
+    if (event.key === "End") selected = columns.length-1;
+    inspect();
+  });
+  const point = event => {
+    const pointer = svg.createSVGPoint(); pointer.x = event.clientX; pointer.y = event.clientY;
+    const matrix = svg.getScreenCTM(); if (!matrix) return;
+    const {x, y} = pointer.matrixTransform(matrix.inverse());
+    if (x < left || x > right || y < top || y > bottom) return;
+    const at = data.range_start_ms + (x-left)/(right-left)*(data.range_end_ms-data.range_start_ms);
+    let first = 0, last = columns.length-1;
+    while (first < last) {
+      const middle = Math.floor((first+last)/2);
+      if (at >= columns[middle].end_ms) first = middle+1; else last = middle;
+    }
+    selected = first;
+    bin = Math.min(13, Math.max(0, 13-Math.floor((y-top)/rowHeight))); inspect();
+  };
+  svg.addEventListener("pointermove", event => { if (event.pointerType !== "touch") point(event); });
+  svg.addEventListener("pointerdown", point);
+  host.replaceChildren(svg);
+  $("heatmap-readout").textContent = "Hover or tap to inspect exact counts. Keyboard: ← → time, ↑ ↓ duration bins.";
+  $("heatmap-note").textContent = `${number(total)} measured requests · ${number(data.charts.length)} chart timestamps summed into ${number(columns.length)} display columns. Every histogram count is included.`;
+  $("heatmap-key-min").textContent = share ? "0%" : maximum ? "1" : "0";
+  $("heatmap-key-max").textContent = share ? "100% of column" : `${number(maximum)} requests · log color`;
+  if (focused) svg.focus({preventScroll: true});
+}
+
 function histogram() {
   const host = $("histogram-chart");
   host.replaceChildren();
@@ -615,7 +788,7 @@ function histogram() {
         y: pos + 3,
         "text-anchor": "end",
         fill: "#a0adb6",
-        "font-size": 8,
+        "font-size": 10,
       },
       value >= 1000 ? `${numeric(value / 1000)}k` : number(value),
     );
@@ -662,7 +835,7 @@ function histogram() {
           y: 164,
           "text-anchor": "middle",
           fill: "#a0adb6",
-          "font-size": 7.5,
+          "font-size": 9,
         },
         labels[index],
       );
@@ -755,7 +928,7 @@ function routeTable() {
     size: $("route-page-size").value,
   });
   state.routePage = selection.page;
-  $("route-coverage").textContent = `${number(routes.length)} endpoint templates · all matching templates loaded · ${percent(state.data.http.http_requests, state.data.http.requests)} request coverage.`;
+  $("route-coverage").textContent = `${number(routes.length)} endpoint templates · all matching templates loaded · ${percent(state.data.http.http_requests, state.data.http.requests)} request coverage. Shares use all instrumented endpoints before filtering; response time includes overlapping requests and is not CPU time.`;
   $("route-count").textContent = selection.total
     ? `${selection.first}–${selection.last} of ${selection.total} matches`
     : "0 matches";
@@ -772,7 +945,19 @@ function routeTable() {
     );
     return;
   }
-  const maximumRequests = routes.reduce((max, row) => Math.max(max, row.requests), 1);
+  const totals = BoboWatchMetrics.endpointContributions(routes);
+  const rank = $("route-sort").value;
+  const score = route => rank === "errors" ? route.errors
+    : rank === "error-rate" ? route.requests ? route.errors / route.requests : 0
+    : rank === "mean" ? route.requests ? route.duration_us / route.requests : 0
+    : rank === "work" ? route.duration_us : route.requests;
+  const maximum = routes.reduce((max, row) => Math.max(max, score(row)), 0);
+  const contribution = (value, denominator, noun, cls = "numeric") => {
+    const td = el("td", undefined, cls);
+    td.append(el("strong", value), el("small", `${percent(denominator[0], denominator[1])} of endpoint ${noun}`));
+    td.title = "Share of all loaded instrumented endpoints in the selected scope and time range; search and pagination do not change the denominator.";
+    return td;
+  };
   host.append(
     table(
       ["Endpoint / site", "Requests", "5xx", "5xx rate", "Mean time", "Total time"],
@@ -788,14 +973,16 @@ function routeTable() {
           );
           const bar = el("div", undefined, "route-bar"),
             fill = el("i");
-          fill.style.width = `${route.requests / maximumRequests * 100}%`;
+          fill.style.width = `${maximum ? score(route) / maximum * 100 : 0}%`;
+          fill.className = ["errors", "error-rate"].includes(rank) ? "error-fill" : ["mean", "work"].includes(rank) ? "duration-fill" : "";
+          bar.title = `Relative ${$("route-sort").selectedOptions[0].textContent.toLowerCase()} across all loaded endpoints`;
           bar.append(fill);
           first.append(bar);
           return append(
             el("tr"),
             first,
-            el("td", number(route.requests), "numeric"),
-            el("td", number(route.errors), route.errors ? "numeric error-number" : "numeric"),
+            contribution(number(route.requests), [route.requests, totals.requests], "traffic"),
+            contribution(number(route.errors), [route.errors, totals.errors], "5xx", route.errors ? "numeric error-number" : "numeric"),
             el(
               "td",
               percent(route.errors, route.requests),
@@ -806,7 +993,7 @@ function routeTable() {
               route.requests ? `${numeric(route.duration_us / route.requests / 1000)} ms` : "—",
               "numeric",
             ),
-            el("td", `${numeric(route.duration_us / 1e6, 2)} s`, "numeric"),
+            contribution(`${numeric(route.duration_us / 1e6, 2)} s`, [route.duration_us, totals.duration_us], "response time"),
           );
         }),
     ),
@@ -1185,6 +1372,8 @@ function render() {
     ],
     (v, tick) => (tick ? numeric(v, 0) : `${numeric(v, 1)} KiB/s`),
   );
+  serviceComparison();
+  latencyHeatmap();
   histogram();
   responseMix();
   routeTable();
@@ -1450,6 +1639,8 @@ $("clear-scope").addEventListener("click", () => {
   state.routePage = 0;
   refresh();
 });
+$("heatmap-mode").addEventListener("change", () => { savePreferences(); if (state.data) latencyHeatmap(); });
+$("service-sort").addEventListener("change", () => { savePreferences(); if (state.data) serviceComparison(); });
 for (const id of ["traffic-view", "error-view"]) $(id).addEventListener("change", () => {
   savePreferences();
   render();
@@ -1475,7 +1666,7 @@ $("dashboard").addEventListener("click", (event) => {
     state.replica = "";
     state.routePage = 0;
     refresh();
-    $("overview").scrollIntoView({block: "start", behavior: "smooth"});
+    $("overview").scrollIntoView({block: "start", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth"});
     $("site").focus({preventScroll: true});
     return;
   }
@@ -1484,7 +1675,7 @@ $("dashboard").addEventListener("click", (event) => {
     state.replica = button.dataset.replica;
     state.routePage = 0;
     refresh();
-    $("overview").scrollIntoView({block: "start", behavior: "smooth"});
+    $("overview").scrollIntoView({block: "start", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth"});
     $("clear").hidden = false;
     $("clear").focus({preventScroll: true});
   }
@@ -1503,6 +1694,14 @@ addEventListener("scroll", () => {
     }
   });
 }, {passive: true});
+let heatmapWidth = 0, heatmapFrame;
+new ResizeObserver(entries => {
+  const width = Math.round(entries[0].contentRect.width);
+  if (!width || width === heatmapWidth) return;
+  heatmapWidth = width;
+  cancelAnimationFrame(heatmapFrame);
+  if (state.data) heatmapFrame = requestAnimationFrame(latencyHeatmap);
+}).observe($("duration-heatmap"));
 setupTimePicker();
 restorePreferences();
 connect();

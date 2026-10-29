@@ -67,6 +67,12 @@ class HTTPMetricsTests(unittest.TestCase):
         self.assertEqual(http["routes"][0]["errors"], 1)
         self.assertEqual(http["latency"]["p50"]["upper_ms"], 500)
         self.assertAlmostEqual(http["mean_ms"], 260)
+        self.assertEqual(http["duration_us"], 780_000)
+        self.assertEqual(
+            http["quality"], {"snapshots": 2, "partial": 0, "skewed": 0, "extended_http": 2}
+        )
+        self.assertEqual(data["charts"][-1]["duration_buckets"], http["buckets"])
+        self.assertEqual(data["charts"][-1]["quality"], http["quality"])
         self.assertIsNone(data["current"]["in_flight"])
         self.assertGreater(data["charts"][-1]["bytes_sent_per_sec"], 0)
 
@@ -127,6 +133,29 @@ class HTTPMetricsTests(unittest.TestCase):
         self.assertIsNone(data["charts"][-1]["client_errors"])
         self.assertIsNone(data["charts"][-1]["mean_request_bytes"])
         self.assertEqual(data["charts"][-1]["errors"], 1)
+        self.assertEqual(data["http"]["duration_us"], 2_000_000)
+        self.assertEqual(
+            data["http"]["quality"],
+            {"snapshots": 1, "partial": 0, "skewed": 0, "extended_http": 0},
+        )
+        self.assertEqual(sum(data["charts"][-1]["duration_buckets"]), 1)
+
+    def test_zero_request_samples_differ_from_no_observations_and_fleet_gaps(self):
+        empty = self.data()
+        self.assertEqual(empty["charts"], [])
+        self.assertEqual(empty["http"]["quality"]["snapshots"], 0)
+        self.ingest(self.snapshot(1000))
+        # Include another expected replica, which has not reported. The sample
+        # itself has complete timing even though the fleet chart is partial.
+        data = self.store.overview({"site_id": "flights"}, 1800)
+        point = data["charts"][-1]
+        expected = {"snapshots": 1, "partial": 0, "skewed": 0, "extended_http": 1}
+        self.assertEqual(data["http"]["quality"], expected)
+        self.assertEqual(point["quality"], expected)
+        self.assertTrue(point["partial"])
+        self.assertEqual(point["duration_buckets"], [0] * 14)
+        self.assertEqual(data["http"]["duration_us"], 0)
+        self.assertIsNone(point["mean_ms"])
 
     def test_endpoint_totals_include_quiet_and_idle_routes_without_a_cap(self):
         busy = [

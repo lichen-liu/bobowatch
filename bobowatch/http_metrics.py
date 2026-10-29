@@ -122,8 +122,21 @@ def endpoint_totals(routes):
 
 def summary(rows, *, include_routes=True):
     counts = sum(row["delta_requests"] for row in rows)
+    duration = sum(row["delta_duration_us"] for row in rows)
     buckets = [sum(row["buckets"][i] for row in rows) for i in range(len(BUCKETS_US) + 1)]
     extended = [row for row in rows if row["http"] is not None]
+    # SQL groups retain source counts. A boolean group flag alone cannot tell
+    # whether one or many source observations had incomplete or skewed timing.
+    quality = {
+        "snapshots": sum(row.get("snapshot_count", 1) for row in rows),
+        "partial": sum(
+            row.get("partial_snapshot_count", int(bool(row.get("partial")))) for row in rows
+        ),
+        "skewed": sum(
+            row.get("skewed_snapshot_count", int(bool(row.get("skewed")))) for row in rows
+        ),
+        "extended_http": sum(row.get("snapshot_count", 1) for row in extended),
+    }
     codes = [sum(row["http"]["codes"][i] for row in extended) for i in range(5)]
     sized = sum(row["http"]["delta_sized_requests"] for row in extended)
     sent = sum(row["http"]["delta_bytes_sent"] for row in extended)
@@ -147,14 +160,13 @@ def summary(rows, *, include_routes=True):
             cell["duration_us"] += route["delta_duration_us"]
     return {
         "requests": counts,
+        "duration_us": duration,
         "errors": sum(row["delta_errors"] for row in rows),
         "latency": {
             name: percentile(buckets, fraction)
             for name, fraction in [("p50", 0.5), ("p95", 0.95), ("p99", 0.99)]
         },
-        "mean_ms": sum(row["delta_duration_us"] for row in rows) / counts / 1000
-        if counts
-        else None,
+        "mean_ms": duration / counts / 1000 if counts else None,
         "buckets": buckets,
         "status_classes": codes if extended else None,
         "http_requests": sum(row["delta_requests"] for row in extended),
@@ -167,7 +179,8 @@ def summary(rows, *, include_routes=True):
         "mean_request_bytes": received / sized if sized else None,
         "routes": endpoint_totals(routes.values()),
         "route_count": len(routes),
-        "snapshot_count": sum(row.get("snapshot_count", 1) for row in rows),
+        "snapshot_count": quality["snapshots"],
+        "quality": quality,
     }
 
 
@@ -223,6 +236,8 @@ def charts(rows, replicas, step, now, stale_ms, *, since=None):
                 "at_ms": at,
                 "rps": sum(rates) if not partial else None,
                 "requests": metrics["requests"],
+                "duration_buckets": metrics["buckets"],
+                "quality": metrics["quality"],
                 "errors": metrics["errors"],
                 "client_errors": metrics["status_classes"][3]
                 if metrics["status_classes"] is not None

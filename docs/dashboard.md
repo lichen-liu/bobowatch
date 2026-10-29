@@ -32,6 +32,47 @@ offers automatic grouping, fixed time groups and **Every timestamp**. Grouping
 combines all observations in a time group; it never samples or drops records.
 At source detail, multiple replicas reporting the same timestamp are combined.
 
+## Compare sites, locate changes, trace endpoints
+
+**Compare sites** puts every selected site in one view before the chart grid.
+Sort by request count, server-error count/rate, weighted mean duration, p95 upper
+bound or the share of responses over one second. Counts and latency describe the
+selected window, including partial retained observations. Traffic shares use all
+selected sites. A site with no completed requests has no error rate, mean or
+percentile. The reporting badge describes current telemetry for rolling views
+and recorded observations for historical views; it does not establish public
+uptime. Click a site name to focus the same dashboard, or open replica details.
+
+**Latency over time** shows all 14 noncumulative duration buckets at each chart
+time group, including the >120-second overflow bucket. The three duration bands
+summarize ≤100 ms, >100 ms to ≤1 s, and >1 s across the entire selected window.
+These are descriptive boundaries, not configured service objectives.
+
+Heatmap colors show either request counts on a logarithmic color scale or each
+bin's share of requests in its time column. Every source histogram is summed;
+there is no sampling or data/query cutoff. Display columns adapt to the available
+width and align with the selected chart grouping. A coarse API group stays whole,
+so it does not turn into falsely missing display intervals. Edge columns are
+clipped to the exact requested dates. The vertical rows are fixed duration bins,
+not equal increments of duration. Hover, tap or focus the plot to inspect exact
+counts, shares and dates; left/right arrows move in time, up/down arrows move
+between duration bins, and Home/End move to the range edges.
+
+Hatched columns contain no metric snapshots. Pale cells contain observations but
+zero requests in that duration bin; an observed interval with no completed
+requests has no percentage. The strip below the heatmap flags partial or skewed
+telemetry. Counts remain attributed to their observation's completion group,
+including counts from an observation spanning a longer reporting interval.
+
+The observation-quality row counts **source snapshots**, even when SQL groups
+many snapshots into one chart point. Partial and clock-skewed source counts are
+separate and can overlap; do not add them to infer a unique affected count.
+**Extended HTTP samples** is the share of snapshots carrying the extended HTTP
+fields. The measurement strip above reports request-weighted measurement
+coverage instead. A heatmap time group can be marked partial because an expected
+replica is missing while containing no source snapshots flagged partial. Current
+inventory is not a historical uptime record.
+
 ## HTTP signals
 
 - **Request rate** sums per-replica interval rates. Switch the traffic chart to
@@ -72,7 +113,13 @@ rankings and minimum counts operate on the entire returned set. The site link
 focuses its site's overview.
 
 Rows are grouped by site and registered route template, and show request count,
-5xx count/rate, mean time and total response time. Total response time includes
+5xx count/rate, mean time and total response time. The request, 5xx and total-time
+cells also show contribution shares across **all instrumented endpoints** in the
+selected scope and window. Search, minimum-request filters and pagination do not
+change those denominators. Endpoint coverage can be lower than total request
+coverage with older producers. With no recorded denominator, the share is unknown
+rather than zero. The endpoint bar follows the selected ranking: requests, errors,
+error rate, mean duration or total duration. Total response time includes
 overlapping requests; it measures aggregate request duration, not CPU time.
 There are no per-route latency percentiles in the current producer protocol.
 
