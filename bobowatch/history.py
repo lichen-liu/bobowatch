@@ -40,6 +40,7 @@ def aggregate_history(conn, replicas, since, until, step, *, exclusive_end=False
             SUM(delta_requests) AS delta_requests,SUM(delta_errors) AS delta_errors,
             SUM(delta_duration_us) AS delta_duration_us,SUM(interval_ms) AS interval_ms,
             MAX(partial) AS partial,MAX(skewed) AS skewed,
+            SUM(partial) AS partial_snapshot_count,SUM(skewed) AS skewed_snapshot_count,
             SUM(delta_bytes_sent) AS delta_bytes_sent,
             SUM(delta_bytes_received) AS delta_bytes_received,
             SUM(delta_sized_requests) AS delta_sized_requests,
