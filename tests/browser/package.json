@@ -1,0 +1,8 @@
+{
+  "name": "bobowatch-browser-checks",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Development-only regression checks against an isolated fictional BoboWatch runtime",
+  "scripts": { "test": "python3 run.py", "test:charts": "node charts.cjs" },
+  "devDependencies": { "playwright": "1.62.1" }
+}
