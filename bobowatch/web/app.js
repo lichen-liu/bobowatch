@@ -1364,6 +1364,10 @@ function renderOperations() {
   $("storage-capacity").className = capacity?.warning ? "error-number" : "";
   const when = stamp => stamp ? rangeStamp(stamp) : "None in this process";
   const details = [
+    ["Storage read", storage.available ? "Available" : `Unavailable (${storage.error_type || "unknown cause"})`],
+    ["Minimum ingestion headroom", storage.available ? storage.admission_available
+      ? "Available at last check; individual snapshot acceptance is not guaranteed"
+      : "Unavailable; reserve, physical free space or live SQL occupancy prevents minimum admission" : "Unknown"],
     ["Configuration", `${info.configuration.status}${info.configuration.error_type ? ` (${info.configuration.error_type})` : ""} · checked ${when(info.configuration.last_checked_at_ms)}`],
     ["Writer queue", `${info.writer.queue_depth} / ${info.writer.queue_capacity} queued · ${info.writer.accepting ? "accepting" : "stopping"}${info.writer.stalled ? " · overdue acknowledgement; work may still commit" : ""}`],
     ["Storage maintenance", info.maintenance.error_type ? `${info.maintenance.error_type} · last error ${when(info.maintenance.last_error_at_ms)}` : `Last success ${when(info.maintenance.last_success_at_ms)}`],
@@ -1372,6 +1376,7 @@ function renderOperations() {
     ["History epoch", storage.available ? storage.epoch : "Unavailable"],
     ["History policy", storage.available ? storage.ram_only ? "RAM only · lost on reboot, power loss or volume release" : "Disk-backed SQL runtime" : "Unavailable"],
     ["Physical files", storage.available ? `${bytes(storage.main_bytes)} database · ${bytes(storage.wal_bytes)} WAL · ${bytes(storage.shm_bytes)} shared memory` : "Unavailable"],
+    ["Live SQL pages", storage.available ? bytes(storage.live_bytes) : "Unavailable"],
     ["Reusable pages / reserve", storage.available ? `${bytes(storage.reusable_bytes)} reusable · ${bytes(storage.reserve_bytes)} reserved` : "Unavailable"],
     ["Volume free / total", storage.available ? `${bytes(storage.volume_free_bytes)} / ${bytes(storage.volume_bytes)}` : "Unavailable"],
     ["Newest retained metric", storage.available ? when(storage.newest_at_ms) : "Unavailable"],

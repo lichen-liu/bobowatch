@@ -12,6 +12,24 @@ const start = app.indexOf('function lineChart(');
 const end = app.indexOf('\nfunction serviceComparison()', start);
 assert.ok(start >= 0 && end > start, 'real chart renderer is present');
 const chart = app.slice(start, end);
+// Every point is a complete dashboard observation: the integrated page may
+// redraw its heatmap asynchronously while line-chart inspection is in progress.
+// Keep that independent renderer's contract valid instead of masking page errors.
+function chartFixture() {
+  const charts = [
+    {at_ms:1000,rps:0,requests:0,partial:false},
+    {at_ms:2000,rps:2,requests:2,partial:true},
+    {at_ms:9000,rps:null,requests:3,partial:false},
+    {at_ms:10000,rps:10,requests:4,partial:false},
+  ].map(point => ({...point,
+    duration_buckets: [point.requests, ...Array(13).fill(0)],
+    quality: {snapshots:1,partial:point.partial ? 1 : 0,skewed:0,extended_http:1},
+  }));
+  return {range_start_ms:0,range_end_ms:10000,window_seconds:10,now_ms:10000,
+    bucket_seconds:1,sample_seconds:1,charts,
+    http: {requests:9,snapshot_count:4,buckets:[9,...Array(13).fill(0)],
+      quality:{snapshots:4,partial:1,skewed:0,extended_http:4}}};
+}
 const support = `
 const $ = id => document.getElementById(id);
 const el = (tag, text, cls) => {const n = document.createElement(tag); if(text !== undefined)n.textContent=text; if(cls)n.className=cls; return n;};
@@ -21,12 +39,7 @@ const svgNode = (label,viewBox) => {const n=document.createElementNS('http://www
 const rangeStamp = ms => new Date(ms).toISOString();
 const axisClock = ms => String(ms);
 const boundScale = n => Math.max(1,n);
-const state = {hiddenSeries:new Map(),data:{range_start_ms:0,range_end_ms:10000,window_seconds:10,now_ms:10000,bucket_seconds:1,sample_seconds:1,charts:[
- {at_ms:1000,rps:0,requests:0,partial:false},
- {at_ms:2000,rps:2,requests:2,partial:true},
- {at_ms:9000,rps:null,requests:3,partial:false},
- {at_ms:10000,rps:10,requests:4,partial:false}
-]}};
+const state = {hiddenSeries:new Map(),data:${JSON.stringify(chartFixture())}};
 function render(){lineChart('traffic-chart','Traffic diagnostics',[
  {name:'Rate',color:'#123',get:p=>p.rps},
  {name:'Count',color:'#456',observed:true,get:p=>p.requests},
@@ -43,7 +56,7 @@ async function runIsolated() {
         const context = await browser.newContext({viewport:{width:phone?390:1440,height:900},hasTouch:phone,isMobile:phone,reducedMotion:'reduce'});
         try {
           const page = await context.newPage(), errors=[];
-          page.on('pageerror',error=>errors.push(error.message));
+          page.on('pageerror',error=>errors.push({phase:'isolated line-chart fixture',message:error.message,stack:error.stack}));
           await page.setContent(`<meta name="viewport" content="width=device-width,initial-scale=1"><style>body{margin:12px}#traffic-chart{width:100%;max-width:900px}svg{display:block;width:100%;height:72px}#traffic-chart{transform:scale(.88);transform-origin:left top}.tooltip[hidden]{display:none}.chart-readout{overflow-wrap:anywhere}#traffic-legend button{min-height:40px}</style><input id="other" aria-label="Other control"><div id="traffic-chart"></div><div id="traffic-legend"></div>`);
           await page.addScriptTag({content:fs.readFileSync(path.join(root,'bobowatch/web/metrics.js'),'utf8')});
           await page.addScriptTag({content:support+'\n'+chart+'\nrender();'});
@@ -105,21 +118,13 @@ if (require.main === module) runIsolated().catch(error=>{console.error(error);pr
 // Integration entry point for the complete ephemeral demo suite. Fixture data
 // stays in page memory; restore the actual demo view even if an assertion fails.
 async function runCharts({page, phone}) {
-  await page.evaluate(() => {
+  await page.evaluate(fixture => {
     window.__chartQaRestore = {
       data: state.data,
       inspectedAt: document.getElementById('traffic-chart').dataset.inspectedAt,
       hostStyle: document.getElementById('traffic-chart').getAttribute('style'),
     };
-    state.data = {...state.data,
-      range_start_ms: 0, range_end_ms: 10000, now_ms: 10000,
-      window_seconds: 10, bucket_seconds: 1, sample_seconds: 1,
-      charts: [
-        {at_ms:1000,rps:0,requests:0,partial:false},
-        {at_ms:2000,rps:2,requests:2,partial:true},
-        {at_ms:9000,rps:null,requests:3,partial:false},
-        {at_ms:10000,rps:10,requests:4,partial:false},
-      ]};
+    state.data = {...state.data, ...fixture, http:{...state.data.http,...fixture.http}};
     window.__drawChartQa = () => lineChart('traffic-chart','Fictional chart inspection',[
       {name:'Fixture rate',color:'#123',get:p=>p.rps},
       {name:'Fixture count',color:'#456',observed:true,get:p=>p.requests},
@@ -128,8 +133,12 @@ async function runCharts({page, phone}) {
     ],value=>String(value));
     delete document.getElementById('traffic-chart').dataset.inspectedAt;
     __drawChartQa();
-  });
+  }, chartFixture());
   try {
+    // Reproduce the independent ResizeObserver heatmap redraw deterministically.
+    // This must work while the line-chart fixture is installed, not just after
+    // finally restores real fictional history.
+    await page.evaluate(() => latencyHeatmap());
     const svg=page.locator('#traffic-chart svg'), readout=page.locator('#traffic-chart-readout');
     assert.equal(await svg.getAttribute('aria-describedby'),'traffic-chart-readout traffic-chart-instructions');
     assert.equal(await readout.getAttribute('role'),'status');
@@ -166,7 +175,7 @@ async function runCharts({page, phone}) {
     await svg.focus();await page.keyboard.press('Escape');
     assert.equal(await page.locator('#traffic-chart .tooltip').isHidden(),true);
     assert.match(await readout.textContent(),/Fixture count: 2/);
-    await page.evaluate(()=>{state.data={...state.data,charts:[]};__drawChartQa();});
+    await page.evaluate(()=>{state.data={...state.data,charts:[],http:{...state.data.http,requests:0,snapshot_count:0,buckets:Array(14).fill(0),quality:{snapshots:0,partial:0,skewed:0,extended_http:0}}};__drawChartQa();latencyHeatmap();});
     assert.match(await readout.textContent(),/No observations.*unknown/);
     return {keyboard:true,svg_coordinates:true,touch:phone,persistent_readout:true,focus_preserved:true,unknown_distinct_from_zero:true};
   } finally {

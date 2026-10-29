@@ -291,6 +291,7 @@ async function checkQuotaAndEpoch(page) {
     assert.equal(await page.locator('#storage-capacity').getAttribute('class'), 'error-number');
     assert.match(await page.locator('#operations-details').textContent(), /rejected \(Invalid\)/);
     assert.match(await page.locator('#operations-details').textContent(), /RAM only/);
+    assert.match(await page.locator('#operations-details').textContent(), /Unavailable; reserve/);
     assert.match(await page.locator('#operations-summary').textContent(), /123,456 old observations evicted/);
     await page.waitForFunction(() => /epoch changed/.test(document.getElementById('notice').textContent));
   } finally { await page.unroute('**/api/operations', fixture); }
@@ -325,10 +326,14 @@ async function main() {
       };
       Object.defineProperty(navigator, 'clipboard', {configurable: true, value: {writeText: async () => { throw new Error('Fixture clipboard unavailable'); }}});
     });
-    const page = await context.newPage(), errors = [];
+    const errors = [];
+    let phase = 'default render', page;
+    context.on('page', observedPage => observedPage.on('pageerror', error => errors.push({
+      phase, page:observedPage === page ? 'main' : 'secondary',
+      message:error.message, stack:error.stack,
+    })));
+    page = await context.newPage();
     page.setDefaultTimeout(15000);
-    page.on('pageerror', error => errors.push(error.message));
-    let phase = 'default render';
     try {
       await page.goto(input.url); await loaded(page);
       assert.equal(await page.locator('#window').inputValue(), '300');
@@ -356,8 +361,7 @@ async function main() {
       assert.deepEqual(errors, []);
       console.log(`${name} ${phone ? 'phone' : 'desktop'}: all dashboard checks passed; zero script errors`);
     } catch (error) {
-      error.message = `${name} ${phone ? 'phone' : 'desktop'} / ${phase}: ${error.message}`;
-      throw error;
+      throw new Error(`${name} ${phone ? 'phone' : 'desktop'} / ${phase}: ${error.message}`, {cause:error});
     } finally { await context.close(); await browser.close(); }
   }
 }
