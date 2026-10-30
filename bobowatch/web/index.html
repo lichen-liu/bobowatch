@@ -8,9 +8,12 @@
     <link rel="stylesheet" href="/style.css" />
     <script src="/ranges.js" defer></script>
     <script src="/metrics.js" defer></script>
+    <script src="/operations.js" defer></script>
+    <script src="/workspace.js" defer></script>
     <script src="/app.js" defer></script>
   </head>
   <body>
+    <a class="skip-link" href="#overview">Skip to dashboard</a>
     <aside class="sidebar">
       <a class="brand" href="/" aria-label="BoboWatch home"
         ><span class="brand-icon">b<span>•</span></span
@@ -28,6 +31,7 @@
         >
         <a href="#routes"><span aria-hidden="true">↗</span> Endpoints</a>
         <a href="#event-section"><span aria-hidden="true">≡</span> Events</a>
+        <a href="#operations-section"><span aria-hidden="true">◉</span> Monitor health</a>
       </nav>
       <div class="sidebar-bottom">
         <span class="session-dot"></span> On-demand session
@@ -45,7 +49,7 @@
           ><button id="logout" hidden>Lock</button>
         </div>
       </header>
-      <main id="overview">
+      <main id="overview" tabindex="-1">
         <section id="login" class="login panel" hidden>
           <span class="eyebrow">BOBOWATCH / PRIVATE ACCESS</span>
           <h1 id="login-title">A clearer picture of every request.</h1>
@@ -67,6 +71,7 @@
             token stays in this tab’s memory until you lock or reload.
           </p>
           <p id="login-error" role="alert"></p>
+          <button id="retry-connect" hidden>Retry connection</button>
         </section>
         <div id="dashboard" hidden>
           <section class="heading">
@@ -83,6 +88,7 @@
           <nav class="mobile-nav" aria-label="Jump to dashboard section">
             <a href="#performance">Charts</a><a href="#routes">Endpoints</a>
             <a href="#service-overview">Sites</a><a href="#event-section">Events</a>
+            <a href="#operations-section">Monitor health</a>
           </nav>
           <p id="demo-banner" class="demo-banner" hidden>
             <span class="demo-label">DEMO WORKSPACE</span
@@ -184,6 +190,7 @@
               </div>
               <button id="export-view" class="icon-button" disabled aria-label="Download JSON" title="Download all queried totals, chart data, endpoints and events"><svg class="control-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M10 2.5v10m-3.5-3.5L10 12.5 13.5 9M3.5 12.5v4h13v-4"/></svg></button>
               <button id="clear" hidden>Clear replica</button>
+              <button id="copy-view" title="Copy a link with the displayed range and scope" disabled>Copy view link</button>
             </div>
           </section>
           <dialog id="time-picker" class="time-picker" aria-labelledby="time-picker-title" data-view="quick">
@@ -220,12 +227,16 @@
             </div>
             <footer class="time-picker-footer"><span id="range-zone"></span><span>Rolling ranges end at now</span></footer>
           </dialog>
-          <p id="query-status" class="query-status" role="status"></p>
+          <div class="query-actions"><p id="query-status" class="query-status" role="status"></p><button id="cancel-query" hidden>Cancel query</button><span id="refresh-status"></span></div>
+          <p id="workspace-message" class="notice" role="status" hidden></p>
+          <button id="reset-view" hidden>Reset invalid view link</button>
+          <div id="link-fallback" class="link-fallback" hidden><label>View link<input id="view-link" type="text" readonly /></label><button id="close-view-link">Close</button></div>
           <div id="scope-status" class="scope-status" aria-live="polite">
             <span id="scope-label">All projects</span>
             <button id="clear-scope" hidden>Clear scope</button>
           </div>
           <p id="range-status" class="range-status" aria-live="polite"></p>
+          <div class="range-navigation" role="group" aria-label="Navigate time range"><button id="previous-range" disabled>← Previous window</button><button id="next-range" disabled>Next window →</button><button id="live-range" hidden>Return to last 5 minutes</button><span>Moves by the displayed duration</span></div>
           <section
             id="summary"
             class="summary"
@@ -444,7 +455,7 @@
               <span id="event-coverage" class="chart-note"></span>
             </div>
             <div class="endpoint-tools event-tools">
-              <label class="endpoint-search">Find event, site or replica<input id="event-search" type="search" placeholder="Search all retained events" /></label>
+              <label class="endpoint-search">Find event, site or replica<input id="event-search" type="search" maxlength="256" placeholder="Search all retained events" /></label>
               <label>Severity<select id="event-severity"><option value="">All severities</option><option value="info">Info</option><option value="warning">Warning</option><option value="error">Error</option></select></label>
             </div>
             <div id="events"></div>
@@ -454,18 +465,16 @@
               <button id="event-previous" disabled>← Previous</button><button id="event-next" disabled>Next →</button>
             </div>
           </section>
+          <section id="operations-section" class="panel operations-panel" aria-label="BoboWatch monitor health">
+            <div class="panel-heading"><div><span class="eyebrow">THE MONITOR ITSELF</span><h2>Monitor health</h2><p class="hint">Global runtime health, separate from the selected application scope.</p></div><button id="refresh-operations">Check now</button></div>
+            <p id="operations-message" class="operations-message" role="status">Waiting for runtime diagnostics.</p>
+            <div id="operations-summary" class="operations-summary"></div>
+            <div class="capacity-wrap"><label for="storage-meter">RAM / SQL history footprint</label><meter id="storage-meter" min="0" max="1" low="0.7" high="0.9" optimum="0" value="0"></meter><span id="storage-capacity"></span></div>
+            <details class="operations-details"><summary>Runtime, delivery &amp; retention details</summary><dl id="operations-details"></dl><h3>Selected replicas · latest known telemetry</h3><p class="hint">Ages advance locally. These timestamps and revisions come from the last overview query.</p><div id="telemetry-details" class="table-scroll" tabindex="0" role="region" aria-label="Replica telemetry diagnostics"></div></details>
+          </section>
           <footer>
-            <span><strong>BoboWatch</strong> · On demand, by design.</span
-            ><span id="data-meta"></span
-            ><span
-              >Public uptime &amp; host resources are not instrumented
-              yet.</span
-            >
+            <span><strong>BoboWatch</strong> · On demand, by design.</span><span id="data-meta"></span><span>Public uptime &amp; host resources are not instrumented yet.</span>
           </footer>
-          <details class="storage-details">
-            <summary>History &amp; storage</summary>
-            <p id="storage-status"></p>
-          </details>
         </div>
       </main>
     </div>

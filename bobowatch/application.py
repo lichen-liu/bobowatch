@@ -5,6 +5,7 @@ import json
 import logging
 import sqlite3
 import threading
+import time
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
@@ -22,6 +23,8 @@ ASSETS = {
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
     "/ranges.js": ("ranges.js", "text/javascript; charset=utf-8"),
     "/metrics.js": ("metrics.js", "text/javascript; charset=utf-8"),
+    "/operations.js": ("operations.js", "text/javascript; charset=utf-8"),
+    "/workspace.js": ("workspace.js", "text/javascript; charset=utf-8"),
     "/style.css": ("style.css", "text/css; charset=utf-8"),
 }
 
@@ -30,6 +33,25 @@ class Application:
     def __init__(self, config, store):
         self.config, self.store = config, store
         self._reload_lock = threading.RLock()
+        self._diagnostics_lock = threading.Lock()
+        self._started_at_ms = int(time.time() * 1000)
+        self._started = time.monotonic()
+        self._configuration = {
+            "status": "current",
+            "last_checked_at_ms": self._started_at_ms,
+            "last_success_at_ms": self._started_at_ms,
+            "last_rejected_at_ms": None,
+            "changed_at_ms": self._started_at_ms,
+            "error_type": None,
+        }
+        self._ingestion = {
+            "accepted": 0,
+            "duplicates": 0,
+            "rejected": 0,
+            "last_accepted_at_ms": None,
+            "last_rejected_at_ms": None,
+            "last_status": None,
+        }
         self.admin_hash = token_hash(config.admin_token_file.read_text().strip())
         self.tokens = {r["id"]: r["token_hash"] for r in config.replicas if not r.get("retired")}
         self.dashboard_access = read_access(config.path.parent)
@@ -41,7 +63,47 @@ class Application:
 
     def reload(self):
         with self._reload_lock:
-            return self._reload()
+            now = int(time.time() * 1000)
+            try:
+                changed = self._reload()
+            except Exception as error:
+                with self._diagnostics_lock:
+                    self._configuration.update(
+                        status="rejected",
+                        last_checked_at_ms=now,
+                        last_rejected_at_ms=now,
+                        error_type=type(error).__name__,
+                    )
+                raise
+            with self._diagnostics_lock:
+                self._configuration.update(
+                    status="current",
+                    last_checked_at_ms=now,
+                    last_success_at_ms=now,
+                    error_type=None,
+                )
+                if changed:
+                    self._configuration["changed_at_ms"] = now
+            return changed
+
+    def operations(self):
+        with self._diagnostics_lock:
+            configuration = dict(self._configuration)
+            ingestion = dict(self._ingestion)
+        from . import __version__
+
+        return {
+            "now_ms": int(time.time() * 1000),
+            "process": {
+                "started_at_ms": self._started_at_ms,
+                "uptime_seconds": max(0, time.monotonic() - self._started),
+                "version": __version__,
+            },
+            "configuration": configuration,
+            "ingestion": ingestion,
+            **self.store.operations_status(),
+            "dashboard_access": self._state[3],
+        }
 
     def _reload(self):
         config = load(self.config.path)
@@ -92,6 +154,21 @@ class Application:
             status, body = 503, {"error": "Storage unavailable; retry with the same sequence"}
         except Exception:
             log.exception("Unhandled monitoring request")
+        if environ.get("REQUEST_METHOD") == "POST" and environ.get("PATH_INFO") == "/v1/ingest":
+            now = int(time.time() * 1000)
+            with self._diagnostics_lock:
+                self._ingestion["last_status"] = status
+                if status == 200:
+                    name = (
+                        "duplicates"
+                        if isinstance(body, dict) and body.get("duplicate")
+                        else "accepted"
+                    )
+                    self._ingestion[name] += 1
+                    self._ingestion["last_accepted_at_ms"] = now
+                else:
+                    self._ingestion["rejected"] += 1
+                    self._ingestion["last_rejected_at_ms"] = now
         if not isinstance(body, bytes):
             body = json.dumps(body, allow_nan=False).encode()
         phrases = {
@@ -146,11 +223,26 @@ class Application:
             return 200, body, mime
         if method == "GET" and path == "/health":
             return 200, {"status": "ok"}, "application/json"
+        if path == "/ready":
+            if method != "GET":
+                return 405, {"error": "Use GET"}, "application/json"
+            ready = self.store.operations_status()["ready"]
+            return (
+                200 if ready else 503,
+                {"status": "ready" if ready else "unavailable"},
+                "application/json",
+            )
         if path == "/api/access":
             if method != "GET":
                 return 405, {"error": "Use GET"}, "application/json"
             return 200, {"dashboard_access": access}, "application/json"
-        if path not in ("/api/overview", "/v1/ingest", "/api/storage", "/api/control"):
+        if path not in (
+            "/api/overview",
+            "/api/operations",
+            "/v1/ingest",
+            "/api/storage",
+            "/api/control",
+        ):
             return 404, {"error": "Not found"}, "application/json"
         auth = env.get("HTTP_AUTHORIZATION", "")
         digest = token_hash(auth[7:]) if auth.startswith("Bearer ") and len(auth) < 512 else ""
@@ -160,11 +252,13 @@ class Application:
             from .control import dispatch
 
             return dispatch(self, env, path)
-        if path == "/api/overview":
+        if path in ("/api/overview", "/api/operations"):
             if method != "GET":
                 return 405, {"error": "Use GET"}, "application/json"
             if access != "local" and not hmac.compare_digest(digest, admin_hash):
                 return 401, {"error": "Admin token required"}, "application/json"
+            if path == "/api/operations":
+                return 200, self.operations(), "application/json"
             raw_query = env.get("QUERY_STRING", "")
             if len(raw_query) > 2048:
                 raise Invalid("Query is too long")

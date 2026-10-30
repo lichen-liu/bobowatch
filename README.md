@@ -14,6 +14,7 @@ external collector suite, frontend build or database server.
 
 **[Installation, deployment, upgrades and Flightrepo rollout](docs/runtime.md).**
 **[Dashboard controls and metric definitions](docs/dashboard.md).**
+**[Production-readiness review and prioritized roadmap](docs/production-readiness.md).**
 
 This is a tested local pilot. Host sampling, public uptime probes, ingestion
 progress and alerting remain future work. Operation is on demand: installation
@@ -89,6 +90,10 @@ have mode 0700.
   or slow routes can appear alongside busy endpoints. One-click site/replica focus
   and an explicit scope indicator make drill-down easy to clear.
 - Waiting, stale, clock-skew, partial-observation and disconnected states.
+- Locally expiring live gauges, cancellable queries, exact-range view links,
+  browser Back/Forward and previous/next time navigation.
+- Read-only monitor health with writer/configuration/ingestion diagnostics,
+  quota and retention details, plus separate liveness and readiness endpoints.
 - Consistent online SQLite backups and refusal to overwrite an existing backup.
 
 Only **Waitress** is a core third-party dependency in this milestone. The adapter
@@ -173,6 +178,8 @@ node --test tests/test_*.cjs
 ```
 
 Node is only needed for development checks, not for running BoboWatch.
+The [browser regression suite](tests/browser/README.md) adds isolated fictional
+desktop and phone checks in CI; its locked dependencies are development-only.
 
 Optional development tools:
 

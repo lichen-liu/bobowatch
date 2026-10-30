@@ -16,8 +16,19 @@ const state = {
   eventPage: 0,
   appliedScope: {},
   hiddenSeries: new Map(),
+  loadedMono: 0,
+  nextRefresh: null,
+  operations: null,
+  operationsMono: 0,
+  operationsError: "",
+  operationsBusy: false,
+  epochChanged: false,
+  workspaceInvalid: false,
+  initialLocation: true,
+  appliedView: null,
 };
 let timer;
+let operationsTimer;
 const preferenceKey = "bobowatch.dashboard.preferences.v1";
 const ranges = BoboWatchRanges;
 const timeWindows = new Set([...ranges.rolling, ...ranges.calendar, "custom", "all"]);
@@ -236,10 +247,12 @@ function axisClock(ms) {
 function scheduleRefresh() {
   clearTimeout(timer);
   timer = null;
+  state.nextRefresh = null;
   if (
     state.busy || document.hidden || !state.refreshSeconds ||
     (!state.token && !state.localAccess)
   ) return;
+  state.nextRefresh = performance.now() + state.refreshSeconds * 1000;
   timer = setTimeout(() => {
     timer = null;
     refresh();
@@ -308,6 +321,10 @@ function options(id, rows, all) {
     ...rows.map((row) => new Option(row.title, row.id)),
   );
   select.value = rows.some((row) => row.id === selected) ? selected : "";
+  if (selected && !rows.some(row => row.id === selected)) {
+    select.add(new Option(`${selected} (not in inventory)`, selected));
+    select.value = selected;
+  }
 }
 function shape(svg, tag, attrs, text) {
   const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
@@ -357,7 +374,7 @@ function kpi(label, value, unit, detail, key, color, icon) {
       el("span", icon, "stat-icon"),
     ),
   );
-  const strong = el("strong", value);
+  const strong = append(el("strong"),el("span",value,"kpi-value"));
   if (unit) strong.append(el("small", unit));
   node.append(strong, el("p", detail), spark(state.data.charts, key, color));
   return node;
@@ -370,16 +387,24 @@ function boundScale(value) {
 }
 function lineChart(id, title, series, format) {
   const host = $(id);
+  const restoreFocus = document.activeElement === host.querySelector("svg");
+  const previousAt = Number(host.dataset.inspectedAt);
+  const hadInspection = Number.isFinite(previousAt);
   host.replaceChildren();
   const width = Math.max(300, Math.min(800, host.clientWidth - 12));
   const svg = svgNode(title, `0 0 ${width} 176`);
   svg.setAttribute("tabindex", "0");
+  svg.setAttribute("aria-describedby", `${id}-readout ${id}-instructions`);
+  svg.setAttribute("aria-keyshortcuts", "ArrowLeft ArrowRight Home End Escape");
   const hidden = state.hiddenSeries.get(id) || new Set();
   const shown = series.filter((line) => !hidden.has(line.name));
   const points = state.data.charts,
     start = state.data.range_start_ms ?? state.data.now_ms - state.data.window_seconds * 1000,
     end = state.data.range_end_ms ?? state.data.now_ms;
-  const valueOf = (line, point) => point.partial && !line.observed ? null : line.get(point);
+  const valueOf = (line, point) => {
+    const value = point.partial && !line.observed ? null : line.get(point);
+    return Number.isFinite(value) ? value : null;
+  };
   const all = shown
     .flatMap((line) =>
       (line.points || points).map((point) =>
@@ -439,7 +464,7 @@ function lineChart(id, title, series, format) {
       if (isolated)
         shape(svg, "circle", {
           cx: x(isolated.at_ms),
-          cy: y(line.get(isolated)),
+          cy: y(valueOf(line, isolated)),
           r: 2,
           fill: line.color,
         });
@@ -494,6 +519,14 @@ function lineChart(id, title, series, format) {
   });
   const tooltip = el("div", undefined, "tooltip");
   tooltip.hidden = true;
+  tooltip.setAttribute("aria-hidden", "true");
+  const readout = el("p", undefined, "chart-readout");
+  readout.id = `${id}-readout`;
+  readout.setAttribute("role", "status");
+  readout.setAttribute("aria-live", "polite");
+  readout.setAttribute("aria-atomic", "true");
+  const instructions = el("p", "Hover or tap to inspect. Keyboard: left/right, Home/End. Missing measurements remain gaps; values are recorded observations, not interpolation.", "chart-instructions");
+  instructions.id = `${id}-instructions`;
   const markers = shown.map((line) =>
     shape(svg, "circle", {
       r: 3,
@@ -503,65 +536,86 @@ function lineChart(id, title, series, format) {
       visibility: "hidden",
     }),
   );
-  let focused = Math.max(0, points.length - 1);
-  function inspect(index) {
-    if (!points.length) return;
+  let focused = hadInspection ? BoboWatchMetrics.nearestIndex(points, previousAt)
+    : Math.max(0, points.length - 1);
+  let inspected = -1;
+  function inspect(index, {reveal = true, persist = true} = {}) {
+    if (!points.length) {
+      readout.textContent = "No observations in this window. Missing data is unknown.";
+      return;
+    }
     focused = Math.max(0, Math.min(points.length - 1, index));
-    const point = points[focused],
-      at = point.at_ms;
-    crosshair.setAttribute("d", `M${x(at)} ${top}V${bottom}`);
-    tooltip.replaceChildren(
-      el("strong", (state.data.window_seconds > 86400 ? rangeStamp(at) : detailClock(at)) +
-        (state.data.bucket_seconds < 1 ? `.${String(at % 1000).padStart(3, "0")}` : "") +
-        (point.partial ? " · partial observations" : "")),
-    );
-    shown.forEach((line, i) => {
-      const source = line.points || points,
-        candidate = source[BoboWatchMetrics.nearestIndex(source, at)],
-        sample = candidate?.at_ms === at ? candidate : null,
-        value = sample ? valueOf(line, sample) : null;
-      const row = append(
-        el("div"),
-        el("span", line.name),
-        el("b", value === null ? "No data" : line.format ? line.format(value) : format(value, false)),
-      );
-      tooltip.append(row);
-      markers[i].setAttribute(
-        "visibility",
-        value === null ? "hidden" : "visible",
-      );
-      if (value !== null) {
-        markers[i].setAttribute("cx", x(at));
-        markers[i].setAttribute("cy", y(value));
-      }
-    });
-    tooltip.hidden = false;
+    const point = points[focused], at = point.at_ms;
+    if (persist) host.dataset.inspectedAt = String(at);
+    const stamp = rangeStamp(at) +
+      (state.data.bucket_seconds < 1 ? `.${String(at % 1000).padStart(3, "0")}` : "");
+    const heading = stamp + (point.partial ? " · partial observations" : "");
+    // Pointer motion over the same observation does not repeatedly announce it.
+    if (inspected !== focused) {
+      const values = [];
+      tooltip.replaceChildren(el("strong", heading));
+      shown.forEach((line, i) => {
+        const source = line.points || points,
+          candidate = source[BoboWatchMetrics.nearestIndex(source, at)],
+          sample = candidate?.at_ms === at ? candidate : null,
+          value = sample ? valueOf(line, sample) : null;
+        const missing = sample?.partial && !line.observed ? "Unavailable (partial telemetry)"
+          : !sample ? "No matching observation" : "No recorded value";
+        const text = value === null ? missing : line.format ? line.format(value) : format(value, false);
+        values.push(`${line.name}: ${text}`);
+        tooltip.append(append(el("div"), el("span", line.name), el("b", text)));
+        markers[i].dataset.available = String(value !== null);
+        if (value !== null) {
+          markers[i].setAttribute("cx", x(at));
+          markers[i].setAttribute("cy", y(value));
+        }
+      });
+      readout.textContent = `${heading} · ${values.join(" · ")}`;
+      readout.dataset.atMs = String(at);
+      inspected = focused;
+    }
+    if (reveal) {
+      crosshair.setAttribute("d", `M${x(at)} ${top}V${bottom}`);
+      markers.forEach(marker => marker.setAttribute("visibility", marker.dataset.available === "true" ? "visible" : "hidden"));
+      tooltip.hidden = false;
+    }
   }
-  svg.addEventListener("pointermove", (event) => {
-    const rect = svg.getBoundingClientRect(),
-      at =
-        start +
-        ((((event.clientX - rect.left) / rect.width) * width - left) /
-          (right - left)) *
-          (end - start);
-    inspect(BoboWatchMetrics.nearestIndex(points, at));
-  });
-  svg.addEventListener("pointerleave", () => {
+  function dismiss() {
     tooltip.hidden = true;
     crosshair.setAttribute("d", "");
-    markers.forEach((m) => m.setAttribute("visibility", "hidden"));
+    markers.forEach(marker => marker.setAttribute("visibility", "hidden"));
+    // The textual readout stays available after touch, blur and pointer leave.
+  }
+  function inspectPointer(event) {
+    const transform = svg.getScreenCTM();
+    if (!transform) return;
+    const cursor = svg.createSVGPoint();
+    cursor.x = event.clientX;
+    cursor.y = event.clientY;
+    const local = cursor.matrixTransform(transform.inverse());
+    const at = start + Math.max(0, Math.min(1, (local.x - left) / (right - left))) * (end - start);
+    inspect(BoboWatchMetrics.nearestIndex(points, at));
+  }
+  svg.addEventListener("pointerdown", inspectPointer);
+  svg.addEventListener("pointermove", inspectPointer);
+  svg.addEventListener("pointerleave", () => {
+    if (document.activeElement !== svg) dismiss();
   });
   svg.addEventListener("keydown", (event) => {
-    if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+    if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
       event.preventDefault();
-      inspect(focused + (event.key === "ArrowLeft" ? -1 : 1));
+      inspect(event.key === "Home" ? 0 : event.key === "End" ? points.length - 1
+        : focused + (event.key === "ArrowLeft" ? -1 : 1));
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      dismiss();
     }
   });
   svg.addEventListener("focus", () => inspect(focused));
-  svg.addEventListener("blur", () => {
-    tooltip.hidden = true;
-  });
-  host.append(svg, tooltip);
+  svg.addEventListener("blur", dismiss);
+  host.append(svg, readout, instructions, tooltip);
+  inspect(focused, {reveal: false, persist: false});
+  if (restoreFocus) svg.focus({preventScroll: true});
   const legend = $(id.replace("-chart", "-legend"));
   if (legend)
     legend.replaceChildren(
@@ -585,7 +639,7 @@ function lineChart(id, title, series, format) {
           const replacement = Array.from(
             $(id.replace("-chart", "-legend")).querySelectorAll("button"),
           ).find((node) => node.dataset.series === line.name);
-          replacement?.focus();
+          replacement?.focus({preventScroll: true});
         });
         return button;
       }),
@@ -621,6 +675,7 @@ function serviceComparison() {
     track.append(fill); traffic.append(track);
     const telemetry = append(el("td", undefined, "compare-telemetry"), badge(status,
       state.error || !state.data.historical && fresh < active.length ? "warning" : "neutral"));
+    telemetry.firstChild.dataset.liveSite = site.id;
     telemetry.dataset.label = "Telemetry";
     telemetry.append(el("small", `${number(metrics.snapshot_count)} samples${q.partial ? ` · ${number(q.partial)} partial` : ""}${q.skewed ? ` · ${number(q.skewed)} skewed` : ""}`));
     return append(el("tr", undefined, "service-row"), identity, traffic,
@@ -1013,10 +1068,13 @@ function renderEvents() {
   replaceAllChildren($("events"), selected.rows.length ? selected.rows.map(event => {
     const stamp = el("time", rangeStamp(event.occurred_at_ms));
     stamp.dateTime = new Date(event.occurred_at_ms).toISOString();
+    const inspect = el("button","Inspect time ±5m","event-inspect");
+    inspect.type = "button";
+    inspect.dataset.eventAt = event.occurred_at_ms;
     return append(el("div", undefined, "event"), stamp,
       el("span", event.severity, `severity ${event.severity}`),
       el("div", event.message, "message"),
-      el("span", `${event.site} / ${event.replica}`, "scope"));
+      append(el("span", undefined, "scope"), el("span", `${event.site} / ${event.replica}`), inspect));
   }) : [el("p", state.data.events.length ? "No events match these filters." : "No operational events in this window.", "empty")]);
 }
 function siteCard(site) {
@@ -1051,6 +1109,7 @@ function siteCard(site) {
       ),
     ),
   );
+  node.querySelector(".site-top .pill").dataset.liveSite = site.id;
   const values = [
     [
       historical ? "Requests observed" : "Current traffic",
@@ -1072,11 +1131,12 @@ function siteCard(site) {
         append(
           el("div"),
           el("small", label),
-          append(el("strong", value), el("em", unit)),
+          append(el("strong"), el("span",value), el("em", unit)),
         ),
       ),
     ),
   );
+  if (!historical) node.querySelector(".site-stats strong span").dataset.currentSite = site.id;
   const rows = site.replicas.map((replica) => {
     const status = state.error
       ? "Updates unavailable"
@@ -1097,7 +1157,7 @@ function siteCard(site) {
         ? replica.range_observed_at_ms ? rangeStamp(replica.range_observed_at_ms) : "No observations"
         : age(replica.observed_at_ms)}`),
     );
-    return append(
+    const row = append(
       el("tr"),
       identity,
       el("td", historical ? number(replica.http.requests) : state.error ? "—" : numeric(replica.current.rps), "numeric"),
@@ -1122,6 +1182,13 @@ function siteCard(site) {
         ),
       ),
     );
+    row.querySelector(".pill").dataset.liveReplica = replica.id;
+    if (!historical) {
+      row.children[1].dataset.currentReplica = replica.id;
+      row.children[4].dataset.inflightReplica = replica.id;
+      row.querySelector("td small").dataset.replicaAge = replica.id;
+    }
+    return row;
   });
   node.append(
     append(
@@ -1136,6 +1203,226 @@ function siteCard(site) {
   );
   return node;
 }
+const viewControls = {
+  window: "window", detail: "chart-detail", refresh: "auto-refresh", traffic: "traffic-view",
+  errors: "error-view", heatmap: "heatmap-mode", serviceSort: "service-sort",
+  routeQuery: "route-search", routeSort: "route-sort", routeMinimum: "route-minimum", routeSize: "route-page-size",
+  eventQuery: "event-search", eventSeverity: "event-severity", eventSize: "event-page-size",
+};
+function viewState() {
+  return {...Object.fromEntries(Object.entries(viewControls).map(([key,id]) => [key,$(id).value])),
+    ...Object.fromEntries(["project","site","host"].map(id => [id,$(id).value])),
+    replica:state.replica, custom:state.customRange};
+}
+function viewMessage(message) {
+  $("workspace-message").textContent = message;
+  $("workspace-message").hidden = !message;
+}
+function applyLocation() {
+  const decoded = BoboWatchWorkspace.decode(location.search);
+  state.workspaceInvalid = !decoded.valid;
+  $("reset-view").hidden = decoded.valid;
+  if (!decoded.valid) {
+    viewMessage(`${decoded.warnings.join(" ")} No query has been made for this invalid link.`);
+    return false;
+  }
+  if (!decoded.present) return true;
+  const view = decoded.state;
+  for (const [key,id] of Object.entries(viewControls)) if (key in view) $(id).value = view[key];
+  for (const id of ["project","site","host"]) {
+    if (view[id] && ![...$(id).options].some(option => option.value === view[id])) $(id).add(new Option(view[id],view[id]));
+    $(id).value = view[id];
+  }
+  state.replica = view.replica;
+  if (view.custom) state.customRange = view.custom;
+  state.refreshSeconds = Number($("auto-refresh").value);
+  state.routePage = state.eventPage = 0;
+  viewMessage("");
+  syncTimeControls();
+  return true;
+}
+function recordLocation(replace = false) {
+  if (state.workspaceInvalid) return;
+  try {
+    const query = BoboWatchWorkspace.encode(viewState());
+    if (location.search.slice(1) !== query) {
+      history[replace || state.initialLocation ? "replaceState" : "pushState"](null,"",`${location.pathname}?${query}${location.hash}`);
+    }
+    state.initialLocation = false;
+  } catch (error) { viewMessage(error.message); }
+}
+function applyExactRange(range) {
+  state.customRange = range;
+  $("window").value = "custom";
+  state.routePage = state.eventPage = 0;
+  syncTimeControls();
+  savePreferences();
+  refresh();
+}
+function renderRangeNavigation() {
+  const data = state.data;
+  $("copy-view").disabled = !data;
+  for (const [id,direction] of [["previous-range",-1],["next-range",1]]) {
+    try {
+      if (!data) throw new Error();
+      BoboWatchWorkspace.shiftRange(data,direction);
+      $(id).disabled = false;
+    } catch { $(id).disabled = true; }
+  }
+  $("live-range").hidden = !data || !data.historical;
+}
+function telemetryNow() {
+  return state.data ? state.data.now_ms + Math.max(0, performance.now() - state.loadedMono) : Date.now();
+}
+function renderFreshness() {
+  if (!state.data || $("dashboard").hidden) return;
+  const data = state.data, now = telemetryNow(), stale = data.stale_seconds;
+  const replicas = data.sites.flatMap(site => site.replicas), active = replicas.filter(r => !r.retired);
+  const statusOf = r => BoboWatchOperations.status(r, now, stale);
+  const fresh = active.filter(r => statusOf(r) === "fresh").length;
+  const interrupted = !!state.error || !navigator.onLine;
+  const current = BoboWatchOperations.current(data.current, replicas, now, stale, interrupted);
+  const snapshotAge = Math.max(0, Math.floor((performance.now() - state.loadedMono) / 1000));
+  $("updated").textContent = `As of ${detailClock(data.now_ms)} · ${snapshotAge < 60 ? `${snapshotAge}s` : `${Math.floor(snapshotAge / 60)}m`} ago`;
+  $("connection").textContent = !navigator.onLine ? "Browser offline" : interrupted ? "Updates interrupted" : "Last query succeeded";
+  $("connection").className = `pill ${interrupted ? "warning" : "neutral"}`;
+  $("refresh-status").textContent = state.busy ? "Previous view remains visible while querying"
+    : document.hidden ? "Auto-refresh paused while hidden"
+    : !state.refreshSeconds ? "Auto-refresh off · showing last queried view"
+    : state.nextRefresh ? `Next query in ${Math.max(0, Math.ceil((state.nextRefresh - performance.now()) / 1000))}s` : "";
+  if (!data.historical) {
+    $("summary").children[0].querySelector(".kpi-value").textContent = numeric(current.rps);
+    $("summary").children[3].querySelector(".kpi-value").textContent = number(current.in_flight);
+    $("summary").children[3].querySelector("p").textContent = `${fresh} / ${active.length} active replicas reporting`;
+    $("telemetry-status").textContent = interrupted ? "Updates unavailable" : `${fresh}/${active.length} active replicas reporting`;
+    $("telemetry-status").className = `pill ${interrupted || fresh < active.length ? "warning" : "neutral"}`;
+    $("replica-count").textContent = `${fresh} / ${active.length} active reporting · select a replica to inspect`;
+    if ($("traffic-view").value !== "count") $("traffic-value").textContent = `${numeric(current.rps)} req/s`;
+  }
+  for (const node of document.querySelectorAll("[data-live-site]")) {
+    const site = data.sites.find(s => s.id === node.dataset.liveSite);
+    const expected = site.replicas.filter(r => !r.retired), reporting = expected.filter(r => statusOf(r) === "fresh").length;
+    if (data.historical) continue;
+    node.textContent = interrupted ? "Updates unavailable" : !expected.length ? "Retired site" : `${reporting}/${expected.length} reporting`;
+    node.className = `pill ${interrupted || reporting < expected.length ? "warning" : "neutral"}`;
+  }
+  for (const node of document.querySelectorAll("[data-current-site]")) {
+    const site = data.sites.find(s => s.id === node.dataset.currentSite);
+    node.textContent = numeric(BoboWatchOperations.current(site.current, site.replicas, now, stale, interrupted).rps);
+  }
+  for (const node of document.querySelectorAll("[data-live-replica], [data-current-replica], [data-inflight-replica], [data-replica-age]")) {
+    const id = node.dataset.liveReplica || node.dataset.currentReplica || node.dataset.inflightReplica || node.dataset.replicaAge;
+    const replica = replicas.find(r => r.id === id);
+    if (!replica) continue;
+    const status = statusOf(replica);
+    if (node.dataset.replicaAge) {
+      const seconds = replica.observed_at_ms == null ? null : Math.max(0, Math.floor((now - replica.observed_at_ms) / 1000));
+      node.textContent = `${replica.host_id} · ${seconds === null ? "Not observed" : `${seconds}s since observation`}`;
+    } else if (!data.historical && node.dataset.liveReplica) {
+      node.textContent = interrupted ? "Updates unavailable" : {fresh:"Reporting",stale:"Stale",waiting:"Waiting",skewed:"Clock skew",retired:"Retired"}[status];
+      node.className = `pill ${interrupted || !["fresh","retired"].includes(status) ? "warning" : "neutral"}`;
+    } else if (!data.historical) {
+      const value = BoboWatchOperations.current(replica.current, [replica], now, stale, interrupted);
+      node.textContent = node.dataset.currentReplica ? numeric(value.rps) : number(value.in_flight);
+    }
+  }
+  for (const node of document.querySelectorAll("[data-telemetry-replica]")) {
+    const replica = replicas.find(r => r.id === node.dataset.telemetryReplica);
+    if (replica) node.textContent = interrupted ? "Updates unavailable" : statusOf(replica);
+  }
+  const coverage = !data.http.snapshot_count && data.historical ? "No retained metric snapshots in this range."
+    : data.retained?.oldest_snapshot_at_ms > data.range_start_ms
+      ? "This range starts before this scope’s oldest retained metric observation. Recorded extent does not establish continuous coverage." : "";
+  const message = state.error || (!navigator.onLine ? "Browser offline. Displayed observations remain available; current gauges are unknown."
+    : state.epochChanged ? "The RAM history epoch changed. Earlier monitoring history is no longer retained."
+    : coverage || (!data.historical && fresh < active.length ? "Some expected replicas have no current telemetry. Current gauges expire; recorded totals remain available." : ""));
+  $("notice").textContent = message;
+  $("notice").hidden = !message;
+}
+function renderOperations() {
+  const info = state.operations;
+  $("refresh-operations").disabled = state.operationsBusy;
+  if (!info) {
+    $("operations-message").textContent = state.operationsError || "Waiting for runtime diagnostics.";
+    return;
+  }
+  const storage = info.storage, capacity = BoboWatchOperations.capacity(storage);
+  $("operations-message").textContent = state.operationsError
+    ? `${state.operationsError} Showing the previous check from ${rangeStamp(info.now_ms)}.`
+    : `Checked ${rangeStamp(info.now_ms)}. ${info.ready ? "Storage is accepting work." : "Monitoring is not ready to accept work; inspect the diagnostics below."}${info.configuration.status === "rejected" ? " Configuration reload was rejected; the previous valid settings remain active." : ""}`;
+  const cards = [
+    ["Readiness · last check", info.ready ? "Ready" : "Unavailable", info.writer.stalled ? "Writer acknowledgement overdue" : `SQL writer ${info.writer.alive ? "running" : "stopped"}`],
+    ["Ingestion · this process", number(info.ingestion.accepted), `${number(info.ingestion.duplicates)} retries deduplicated · ${number(info.ingestion.rejected)} rejected`],
+    ["History retained", storage.available && storage.oldest_at_ms ? rangeStamp(storage.oldest_at_ms) : "No metric history", storage.available ? `${number(storage.evicted_snapshots)} old observations evicted` : "Storage check failed"],
+    ["Runtime", `${numeric(info.process.uptime_seconds / 3600, 1)}h`, `BoboWatch ${info.process.version} · started ${rangeStamp(info.process.started_at_ms)}`],
+  ];
+  $("operations-summary").replaceChildren(...cards.map(([title,value,detail]) => append(el("div"),el("small",title),el("strong",value),el("p",detail))));
+  $("storage-meter").hidden = capacity?.ratio == null;
+  $("storage-meter").value = Math.min(1, capacity?.ratio || 0);
+  $("storage-meter").setAttribute("aria-valuetext", capacity ? `${bytes(capacity.used)} used${capacity.quota ? ` of ${bytes(capacity.quota)}` : ", no quota"}` : "Storage unavailable");
+  $("storage-capacity").textContent = capacity ? `${bytes(capacity.used)} used${capacity.quota ? ` / ${bytes(capacity.quota)} quota (${numeric(capacity.ratio * 100)}%) · ${bytes(capacity.headroom)} headroom after reserve` : " · no configured quota"}` : "Storage unavailable";
+  $("storage-capacity").className = capacity?.warning ? "error-number" : "";
+  const when = stamp => stamp ? rangeStamp(stamp) : "None in this process";
+  const details = [
+    ["Storage read", storage.available ? "Available" : `Unavailable (${storage.error_type || "unknown cause"})`],
+    ["Minimum ingestion headroom", storage.available ? storage.admission_available
+      ? "Available at last check; individual snapshot acceptance is not guaranteed"
+      : "Unavailable; reserve, physical free space or live SQL occupancy prevents minimum admission" : "Unknown"],
+    ["Configuration", `${info.configuration.status}${info.configuration.error_type ? ` (${info.configuration.error_type})` : ""} · checked ${when(info.configuration.last_checked_at_ms)}`],
+    ["Writer queue", `${info.writer.queue_depth} / ${info.writer.queue_capacity} queued · ${info.writer.accepting ? "accepting" : "stopping"}${info.writer.stalled ? " · overdue acknowledgement; work may still commit" : ""}`],
+    ["Storage maintenance", info.maintenance.error_type ? `${info.maintenance.error_type} · last error ${when(info.maintenance.last_error_at_ms)}` : `Last success ${when(info.maintenance.last_success_at_ms)}`],
+    ["Last accepted ingestion", when(info.ingestion.last_accepted_at_ms)],
+    ["Last rejected ingestion", `${when(info.ingestion.last_rejected_at_ms)}${info.ingestion.last_status ? ` · last ingestion HTTP ${info.ingestion.last_status}` : ""}`],
+    ["History epoch", storage.available ? storage.epoch : "Unavailable"],
+    ["History policy", storage.available ? storage.ram_only ? "RAM only · lost on reboot, power loss or volume release" : "Disk-backed SQL runtime" : "Unavailable"],
+    ["Physical files", storage.available ? `${bytes(storage.main_bytes)} database · ${bytes(storage.wal_bytes)} WAL · ${bytes(storage.shm_bytes)} shared memory` : "Unavailable"],
+    ["Live SQL pages", storage.available ? bytes(storage.live_bytes) : "Unavailable"],
+    ["Reusable pages / reserve", storage.available ? `${bytes(storage.reusable_bytes)} reusable · ${bytes(storage.reserve_bytes)} reserved` : "Unavailable"],
+    ["Volume free / total", storage.available ? `${bytes(storage.volume_free_bytes)} / ${bytes(storage.volume_bytes)}` : "Unavailable"],
+    ["Newest retained metric", storage.available ? when(storage.newest_at_ms) : "Unavailable"],
+    ["Quota enforcement", storage.available ? storage.quota_applied ? "Within quota" : "Pending reclamation" : "Unavailable"],
+  ];
+  $("operations-details").replaceChildren(...details.flatMap(([key,value]) => [el("dt",key),el("dd",value)]));
+  if (state.data) {
+    const now = telemetryNow();
+    const rows = state.data.sites.flatMap(s => s.replicas).map(r => {
+      const health = el("td", BoboWatchOperations.status(r,now,state.data.stale_seconds));
+      health.dataset.telemetryReplica = r.id;
+      return append(el("tr"),el("td",r.id),health,
+        el("td",r.observed_at_ms ? rangeStamp(r.observed_at_ms) : "Not observed"),
+        el("td",r.received_at_ms ? rangeStamp(r.received_at_ms) : "Not received"),
+        el("td",r.received_at_ms != null && r.observed_at_ms != null ? `${numeric((r.received_at_ms-r.observed_at_ms)/1000,3)}s` : "—"),el("td",r.revision || "Unknown"));
+    });
+    $("telemetry-details").replaceChildren(table(["Replica","Telemetry","Observed","Received","Delivery clock delta","Revision"],rows));
+  }
+}
+async function refreshOperations() {
+  clearTimeout(operationsTimer);
+  if (state.operationsBusy || (!state.token && !state.localAccess) || document.hidden) return;
+  state.operationsBusy = true;
+  $("refresh-operations").disabled = true;
+  const session = state.session;
+  try {
+    const response = await fetch("/api/operations", {headers: state.token ? {Authorization:"Bearer " + state.token} : {}});
+    if (!response.ok) throw new Error(`Runtime check unavailable (HTTP ${response.status}).`);
+    const data = await response.json();
+    if (session !== state.session) return;
+    const priorEpoch = state.operations?.storage?.epoch || state.data?.storage?.epoch;
+    if (priorEpoch && data.storage.available && data.storage.epoch !== priorEpoch) state.epochChanged = true;
+    state.operations = data;
+    state.operationsMono = performance.now();
+    state.operationsError = "";
+  } catch (error) {
+    if (session !== state.session) return;
+    state.operationsError = error.message;
+  } finally {
+    state.operationsBusy = false;
+    if (session === state.session) {
+      renderOperations();
+      if (state.refreshSeconds && !document.hidden) operationsTimer = setTimeout(refreshOperations,30000);
+    }
+  }
+}
 function render() {
   const data = state.data;
   if (!data) return;
@@ -1148,10 +1435,6 @@ function render() {
       ? 0
       : replicas.filter((r) => r.status === "fresh").length;
   $("demo-banner").hidden = !data.demo;
-  const storage = data.storage;
-  $("storage-status").textContent = storage
-    ? `${storage.ram_only ? "RAM-only history" : "SQL history"} · ${(storage.used_bytes / 2 ** 20).toFixed(1)} MiB${storage.quota_bytes ? ` / ${(storage.quota_bytes / 2 ** 30).toFixed(2)} GiB quota` : ""} · epoch ${storage.epoch.slice(0, 8)} · ${number(storage.evicted_snapshots)} old observations evicted${storage.oldest_at_ms ? ` · oldest ${new Date(storage.oldest_at_ms).toLocaleString()}` : ""}`
-    : "";
   $("connection").replaceWith(
     Object.assign(
       badge(
@@ -1180,7 +1463,7 @@ function render() {
   );
   const coverage = !metrics.snapshot_count && data.historical
     ? "No retained metric snapshots in this range."
-    : storage?.oldest_at_ms > data.range_start_ms
+    : data.retained?.oldest_snapshot_at_ms > data.range_start_ms
       ? "Only retained history is shown; this range starts before the oldest available observation."
       : "";
   const issues = state.error ||
@@ -1396,21 +1679,34 @@ function render() {
   $("export-view").disabled = false;
   $("data-meta").textContent =
     `${number(metrics.snapshot_count)} source observations · ${numeric(data.bucket_seconds, 3)}s chart groups · all matching records included. Partial counts are observed values; unavailable rates remain gaps.`;
+  renderRangeNavigation();
+  renderFreshness();
+  renderOperations();
 }
 async function refresh() {
   if (!state.token && !state.localAccess) return false;
-  clearTimeout(timer);
-  if (state.busy) {
-    state.pending = true;
+  if (state.workspaceInvalid) {
+    $("login").hidden = true;
+    $("dashboard").hidden = false;
+    if (!state.data) $("dashboard").classList.add("no-history");
+    refreshOperations();
     return false;
   }
+  clearTimeout(timer);
+  state.nextRefresh = null;
+  state.controller?.abort();
   state.busy = true;
   $("refresh").disabled = true;
+  $("cancel-query").hidden = false;
   const session = state.session;
   const controller = new AbortController();
   state.controller = controller;
+  const requestedView = viewState();
+  recordLocation();
+  refreshOperations();
   const started = performance.now();
   const progress = setInterval(() => {
+    if (state.controller !== controller) return;
     $("query-status").textContent = `Reading all matching history… ${Math.floor((performance.now() - started) / 1000)}s elapsed`;
   }, 5000);
   $("query-status").textContent = "Reading all matching history…";
@@ -1439,7 +1735,7 @@ async function refresh() {
       headers: state.token ? { Authorization: "Bearer " + state.token } : {},
       signal: controller.signal,
     });
-    if (session !== state.session) return false;
+    if (session !== state.session || state.controller !== controller) return false;
     if (response.status === 401) {
       state.token = "";
       state.localAccess = false;
@@ -1451,9 +1747,12 @@ async function refresh() {
       ? "Admin token was not accepted."
       : `Updates unavailable (${response.status}). Displayed history is not live.`);
     const data = await response.json();
-    if (session !== state.session) return false;
+    if (session !== state.session || state.controller !== controller) return false;
+    if (state.data?.storage?.epoch && data.storage?.epoch !== state.data.storage.epoch) state.epochChanged = true;
     state.data = data;
+    state.loadedMono = started;
     state.appliedScope = requestedScope;
+    state.appliedView = requestedView;
     state.localAccess = data.dashboard_access === "local";
     if (state.localAccess) state.token = "";
     state.error = "";
@@ -1472,7 +1771,7 @@ async function refresh() {
     render();
     return true;
   } catch (error) {
-    if (session !== state.session) return false;
+    if (session !== state.session || state.controller !== controller) return false;
     state.error =
       error.name === "AbortError"
         ? "This query was cancelled. Displayed values are from the last successful range."
@@ -1491,14 +1790,15 @@ async function refresh() {
     return false;
   } finally {
     clearInterval(progress);
+    if (state.controller !== controller) return false;
     $("query-status").textContent = "";
     $("dashboard").setAttribute("aria-busy", "false");
     state.busy = false;
     $("refresh").disabled = false;
-    if (state.pending && (state.token || state.localAccess)) {
-      state.pending = false;
-      queueMicrotask(refresh);
-    } else scheduleRefresh();
+    $("cancel-query").hidden = true;
+    state.controller = null;
+    scheduleRefresh();
+    renderFreshness();
   }
 }
 function showLogin() {
@@ -1518,6 +1818,7 @@ function showLogin() {
 async function connect() {
   const controller = new AbortController();
   $("connection").textContent = "Connecting";
+  $("retry-connect").hidden = true;
   try {
     const response = await fetch("/api/access", { signal: controller.signal });
     if (!response.ok) throw new Error("Dashboard connection unavailable. Reload to retry.");
@@ -1536,6 +1837,7 @@ async function connect() {
     $("login-error").textContent = error.name === "AbortError"
       ? "Dashboard connection timed out. Reload to retry."
       : error.message;
+    $("retry-connect").hidden = false;
   }
 }
 $("login-form").addEventListener("submit", async (event) => {
@@ -1559,10 +1861,12 @@ $("logout").addEventListener("click", () => {
   state.controller?.abort();
   state.token = "";
   state.data = null;
+  state.operations = null;
   state.replica = "";
   state.error = "";
   state.pending = false;
   clearTimeout(timer);
+  clearTimeout(operationsTimer);
   showLogin();
   $("login-error").textContent = "";
   $("token").focus();
@@ -1605,13 +1909,71 @@ $("auto-refresh").addEventListener("change", () => {
   syncTimeControls();
   savePreferences();
   scheduleRefresh();
+  recordLocation(true);
+  clearTimeout(operationsTimer);
+  if (state.refreshSeconds) refreshOperations();
+  renderFreshness();
 });
 document.addEventListener("visibilitychange", () => {
   clearTimeout(timer);
+  clearTimeout(operationsTimer);
+  state.nextRefresh = null;
   if (!document.hidden && state.refreshSeconds && (state.token || state.localAccess))
     refresh();
+  renderFreshness();
 });
 $("refresh").addEventListener("click", refresh);
+$("cancel-query").addEventListener("click", () => state.controller?.abort());
+$("retry-connect").addEventListener("click", connect);
+$("refresh-operations").addEventListener("click", refreshOperations);
+$("reset-view").addEventListener("click", () => {
+  history.replaceState(null,"",location.pathname + location.hash);
+  state.workspaceInvalid = false;
+  $("reset-view").hidden = true;
+  for (const id of ["project","site","host"]) $(id).value = "";
+  state.replica = "";
+  $("window").value = "300";
+  syncTimeControls();
+  viewMessage("");
+  refresh();
+});
+for (const [id,direction] of [["previous-range",-1],["next-range",1]]) $(id).addEventListener("click", () => {
+  try { applyExactRange(BoboWatchWorkspace.shiftRange(state.data,direction)); }
+  catch (error) { viewMessage(error.message); }
+});
+$("live-range").addEventListener("click", () => {
+  $("window").value = "300";
+  syncTimeControls(); savePreferences(); refresh();
+});
+$("copy-view").addEventListener("click", async () => {
+  if (!state.data) return;
+  try {
+    const query = BoboWatchWorkspace.encode({...viewState(),
+      ...Object.fromEntries(["project","site","host","replica"].map(key => [key,state.appliedScope[key] || ""])),
+      detail:state.appliedView.detail,
+      routeQuery:$("route-search").value, eventQuery:$("event-search").value,
+      routeSort:$("route-sort").value, routeMinimum:$("route-minimum").value, routeSize:$("route-page-size").value,
+      eventSeverity:$("event-severity").value, eventSize:$("event-page-size").value},
+      {fixedRange:{range_start_ms:state.data.range_start_ms,range_end_ms:state.data.range_end_ms + (state.data.historical ? 0 : 1)}});
+    const url = new URL(location.href); url.search = query;
+    $("view-link").value = url.href;
+    $("link-fallback").hidden = false;
+    try {
+      await navigator.clipboard.writeText(url.href);
+      viewMessage("View link copied with fixed dates and the displayed scope. Links contain no credentials. Retention may remove these observations later.");
+    } catch {
+      $("view-link").focus(); $("view-link").select();
+      viewMessage("Copy the view link below. Its dates and displayed scope are fixed; retained data may expire later.");
+    }
+  } catch (error) { viewMessage(error.message); }
+});
+$("close-view-link").addEventListener("click", () => { $("link-fallback").hidden = true; $("copy-view").focus(); });
+addEventListener("popstate", () => {
+  state.controller?.abort();
+  if (applyLocation()) refresh();
+});
+addEventListener("offline", renderFreshness);
+addEventListener("online", () => { if (state.localAccess || state.token) refresh(); else connect(); });
 $("export-view").addEventListener("click", () => {
   if (!state.data) return;
   const blob = new Blob([JSON.stringify({format: "bobowatch.overview.v1", exported_at_ms: Date.now(),
@@ -1625,6 +1987,7 @@ $("export-view").addEventListener("click", () => {
 for (const id of ["event-search", "event-severity", "event-page-size"])
   $(id).addEventListener(id === "event-search" ? "input" : "change", () => {
     state.eventPage = 0; renderEvents();
+    recordLocation(true);
   });
 for (const [id, delta] of [["event-previous", -1], ["event-next", 1]])
   $(id).addEventListener("click", () => { state.eventPage += delta; renderEvents(); });
@@ -1639,16 +2002,18 @@ $("clear-scope").addEventListener("click", () => {
   state.routePage = 0;
   refresh();
 });
-$("heatmap-mode").addEventListener("change", () => { savePreferences(); if (state.data) latencyHeatmap(); });
-$("service-sort").addEventListener("change", () => { savePreferences(); if (state.data) serviceComparison(); });
+$("heatmap-mode").addEventListener("change", () => { savePreferences(); recordLocation(true); if (state.data) latencyHeatmap(); });
+$("service-sort").addEventListener("change", () => { savePreferences(); recordLocation(true); if (state.data) { serviceComparison(); renderFreshness(); } });
 for (const id of ["traffic-view", "error-view"]) $(id).addEventListener("change", () => {
   savePreferences();
+  recordLocation(true);
   render();
 });
 for (const id of ["route-search", "route-sort", "route-minimum", "route-page-size"])
   $(id).addEventListener(id === "route-search" ? "input" : "change", () => {
     state.routePage = 0;
     if (state.data) routeTable();
+    recordLocation(true);
   });
 for (const [id, delta] of [["route-previous", -1], ["route-next", 1]])
   $(id).addEventListener("click", () => {
@@ -1656,6 +2021,13 @@ for (const [id, delta] of [["route-previous", -1], ["route-next", 1]])
     routeTable();
   });
 $("dashboard").addEventListener("click", (event) => {
+  const incident = event.target.closest("[data-event-at]");
+  if (incident) {
+    const at = Number(incident.dataset.eventAt);
+    applyExactRange({start_ms:Math.max(0,at - 300000),end_ms:Math.min(Date.now(),at + 300000)});
+    $("performance").scrollIntoView({block:"start",behavior:matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth"});
+    return;
+  }
   const siteButton = event.target.closest("[data-site]");
   if (siteButton) {
     const site = state.data.site_options.find(site => site.id === siteButton.dataset.site);
@@ -1704,4 +2076,13 @@ new ResizeObserver(entries => {
 }).observe($("duration-heatmap"));
 setupTimePicker();
 restorePreferences();
+applyLocation();
+setInterval(() => {
+  if (!document.hidden) {
+    renderFreshness();
+    if (state.operations && performance.now() - state.operationsMono > 90000 && !state.operationsError) {
+      $("operations-message").textContent = `Runtime diagnostics were last checked ${rangeStamp(state.operations.now_ms)}. Use Check now to confirm current readiness.`;
+    }
+  }
+},1000);
 connect();

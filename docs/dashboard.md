@@ -25,6 +25,32 @@ including during auto-refresh or reload. The end is excluded. The time range,
 refresh interval, chart detail and traffic/error chart modes are remembered in the browser;
 credentials remain in tab memory only. Hidden tabs pause polling.
 
+The query indicator names work in progress and offers **Cancel query**. Choosing
+another view supersedes the old browser request. Last successful dates, scope and
+values stay visible until the requested view arrives. Cancellation stops waiting
+in the browser; SQLite work may still finish. There is no query deadline.
+**Retry connection** recovers an initial failed connection without reloading.
+
+Live reporting states and current request/in-flight gauges age between network
+queries using server time plus elapsed monotonic time. Expired current gauges
+become unknown even with auto-refresh Off. Recorded totals remain available.
+The header distinguishes the last successful query from current producer health.
+An offline browser suppresses live gauges and retries when it returns online.
+
+**Copy view link** fixes the successfully displayed range and scope, with current
+presentation and table filters. Links contain no credentials, and retained data
+can expire after sharing. A selectable link appears when clipboard access is
+unavailable, including some phone LAN browsers. The address bar also remembers
+rolling views; Back/Forward restores them. Invalid links require an explicit
+reset and never silently broaden a query. Missing inventory IDs remain selected
+and produce an empty scope rather than falling back to all sites.
+
+**Previous window** and **Next window** move by the displayed elapsed duration,
+using exact custom boundaries. These are elapsed windows, not civil calendar
+periods across a daylight-saving transition. **Return to last 5 minutes** restores
+a live range. An event's **Inspect time ±5m** action queries the surrounding ten
+minutes, clipping the end to now.
+
 **All retained history** spans the oldest through the newest matching metric snapshot or event,
 including retained records from retired replicas. Custom dates have no duration
 cap; the API also accepts any positive rolling window in seconds. **Chart detail**
@@ -100,6 +126,34 @@ Hover a chart or focus it and use the left/right arrows for values. Toggle serie
 in a chart's legend. Mean latency readouts show measured means; percentile
 readouts retain the upper-bound symbol. Gaps and missing measurements remain
 unknown. No completed requests means no latency, size average or percentage.
+Line charts also support a phone tap, Home/End, persistent textual readouts and
+keyboard focus retained across rendering. Escape hides the visual tooltip while
+keeping the inspected values readable. Gaps, partial rates and observed zeros
+are described explicitly.
+
+## Monitor health
+
+The **Monitor health** panel describes the global BoboWatch runtime independently
+of dashboard scope. It shows last-checked readiness, process uptime, ingestion
+HTTP outcomes since process start, retained dates, evictions and quota use.
+Details include SQL writer/queue state, configuration reload rejection,
+maintenance results, physical database/WAL/shared-memory sizes, free volume,
+reserved headroom and history epoch. A changed epoch warns that previous RAM
+history is no longer retained. Headroom is not a forecast of retention duration.
+
+Runtime checks run independently of expensive history queries, at most every
+30 seconds when automatic refresh is enabled and the page is visible. **Check
+now** performs an explicit check; Off pauses automatic network checks. Every
+result displays its check time. Replica timestamps/revisions come from the last
+overview, and are labeled separately. Received-minus-observed is a clock delta,
+not a network-latency measurement.
+
+`GET /health` checks HTTP liveness. `GET /ready` returns 200 when current storage
+readiness checks pass, or 503 otherwise. `GET /api/operations` returns read-only
+diagnostics under the same dashboard access policy as overview. It remains
+available to explain readiness failures. Administrator writes retain their
+loopback/token boundary. An ingestion acknowledgement failure may still commit
+later, so HTTP outcome counters do not measure permanent data loss.
 
 ## Investigating endpoints
 
@@ -164,7 +218,7 @@ The view is labeled with its data's as-of time.
 
 Installed history lives on the quota limited RAM disk. Earlier data may have been
 evicted or lost on reboot. Selecting a longer range cannot restore it.
-**History & storage** shows usage, quota, epoch, oldest retained observation and
+**Monitor health** shows usage, quota, epoch, oldest retained observation and
 eviction counts.
 
 These views use existing SQL observations. They add no producer fields, storage

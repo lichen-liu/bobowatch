@@ -35,6 +35,7 @@ class Storage(Protocol):
         self, filters: dict, window=300, *, start_ms=None, end_ms=None, bucket_ms=None
     ) -> dict: ...
     def backup(self, target: Path) -> None: ...
+    def operations_status(self) -> dict: ...
     def close(self) -> None: ...
 
 
@@ -54,6 +55,16 @@ class SQLiteStore:
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         self._queue = queue.Queue(maxsize=128)
         self._guard, self._accepting = threading.Lock(), True
+        self._diagnostics_lock = threading.Lock()
+        self._writer_activity = {"busy_since_ms": None, "last_completed_at_ms": None}
+        self._busy_since = None
+        self._maintenance_since = None
+        self._maintenance = {
+            "active_since_ms": None,
+            "last_success_at_ms": None,
+            "last_error_at_ms": None,
+            "error_type": None,
+        }
         self._ready, self._startup_error = threading.Event(), None
         self._thread = threading.Thread(target=self._writer, name="bobowatch-sql", daemon=True)
         self._thread.start()
@@ -153,30 +164,61 @@ class SQLiteStore:
             self._ready.set()
             return
         self._ready.set()
+        with self._diagnostics_lock:
+            self._maintenance["last_success_at_ms"] = int(time.time() * 1000)
         try:
             while True:
                 try:
                     work = self._queue.get(timeout=2)
                 except queue.Empty:
                     try:
-                        self._check_volume()
-                        maintain(conn, self.path, self._quota)
+                        self._maintenance_pass(conn)
                     except (Busy, OSError, ValueError, sqlite3.Error):
                         pass  # A failed/missing mount rejects ingestion, never falls back.
                     continue
                 if work is None:
                     break
                 operation, future = work
+                with self._diagnostics_lock:
+                    self._busy_since = time.monotonic()
+                    self._writer_activity["busy_since_ms"] = int(time.time() * 1000)
                 try:
-                    self._check_volume()
-                    maintain(conn, self.path, self._quota)
+                    self._maintenance_pass(conn)
                     with conn:
                         result = operation(conn)
                     future.set_result(result)
                 except Exception as exc:
                     future.set_exception(exc)
+                finally:
+                    with self._diagnostics_lock:
+                        self._busy_since = None
+                        self._writer_activity["busy_since_ms"] = None
+                        self._writer_activity["last_completed_at_ms"] = int(time.time() * 1000)
         finally:
             conn.close()
+
+    def _maintenance_pass(self, conn):
+        with self._diagnostics_lock:
+            self._maintenance_since = time.monotonic()
+            self._maintenance["active_since_ms"] = int(time.time() * 1000)
+        try:
+            self._check_volume()
+            maintain(conn, self.path, self._quota)
+        except (Busy, OSError, ValueError, sqlite3.Error) as error:
+            with self._diagnostics_lock:
+                self._maintenance.update(
+                    last_error_at_ms=int(time.time() * 1000), error_type=type(error).__name__
+                )
+            raise
+        else:
+            with self._diagnostics_lock:
+                self._maintenance.update(
+                    last_success_at_ms=int(time.time() * 1000), error_type=None
+                )
+        finally:
+            with self._diagnostics_lock:
+                self._maintenance_since = None
+                self._maintenance["active_since_ms"] = None
 
     def _submit(self, operation):
         future = Future()
@@ -275,9 +317,9 @@ class SQLiteStore:
     def _storage_status(self, conn):
         stats = footprint(conn, self.path)
         state = dict(conn.execute("SELECT * FROM storage_state WHERE id=1").fetchone())
-        oldest, newest = conn.execute(
-            "SELECT MIN(observed_at_ms),MAX(observed_at_ms) FROM snapshots"
-        ).fetchone()
+        # Separate indexed extrema avoid a scan of the complete snapshot index.
+        oldest = conn.execute("SELECT MIN(observed_at_ms) FROM snapshots").fetchone()[0]
+        newest = conn.execute("SELECT MAX(observed_at_ms) FROM snapshots").fetchone()[0]
         usage = shutil.disk_usage(self.path.parent)
         return {
             **stats,
@@ -295,6 +337,71 @@ class SQLiteStore:
 
     def storage_status(self):
         return self._submit(self._storage_status)
+
+    def operations_status(self):
+        """Independent diagnostic read: never queue behind the writer or scan history."""
+        with self._guard:
+            accepting = self._accepting
+        with self._diagnostics_lock:
+            activity = dict(self._writer_activity)
+            maintenance = dict(self._maintenance)
+            maintenance["busy_seconds"] = (
+                max(0, time.monotonic() - self._maintenance_since)
+                if self._maintenance_since is not None
+                else 0
+            )
+            busy_seconds = (
+                max(0, time.monotonic() - self._busy_since) if self._busy_since is not None else 0
+            )
+        writer = {
+            "alive": self._thread.is_alive(),
+            "accepting": accepting,
+            "queue_depth": self._queue.qsize(),
+            "queue_capacity": self._queue.maxsize,
+            **activity,
+            "busy_seconds": busy_seconds,
+            # A slow write may still commit. This is readiness, not cancellation.
+            "stalled": max(busy_seconds, maintenance["busy_seconds"]) >= 5,
+        }
+        try:
+            self._check_volume()
+            with closing(
+                sqlite3.connect(f"{self.path.as_uri()}?mode=ro", uri=True, timeout=0.05)
+            ) as conn:
+                conn.row_factory = sqlite3.Row
+                conn.execute("PRAGMA query_only=ON")
+                with conn:
+                    conn.execute("BEGIN")
+                    storage = self._storage_status(conn)
+            storage.pop("database", None)
+            storage["available"] = True
+            quota = storage["quota_bytes"]
+            reserve = storage["reserve_bytes"]
+            storage["admission_available"] = storage["volume_free_bytes"] >= 65536 + reserve and (
+                quota is None
+                or (
+                    storage["used_bytes"] + 65536 + reserve <= quota
+                    and storage["live_bytes"] + 65536 <= quota * 0.80
+                )
+            )
+        except (Busy, OSError, ValueError, sqlite3.Error) as error:
+            storage = {"available": False, "error_type": type(error).__name__}
+        ready = (
+            writer["alive"]
+            and writer["accepting"]
+            and not writer["stalled"]
+            and writer["queue_depth"] < writer["queue_capacity"]
+            and maintenance["error_type"] is None
+            and storage["available"]
+            and storage.get("quota_applied", False)
+            and storage.get("admission_available", False)
+        )
+        return {
+            "ready": bool(ready),
+            "writer": writer,
+            "maintenance": maintenance,
+            "storage": storage,
+        }
 
     def maintain(self):
         self._submit(lambda conn: maintain(conn, self.path, self._quota, force=True, seconds=0.5))
@@ -524,6 +631,12 @@ class SQLiteStore:
                 ]
                 replicas, rows, events = [], [], []
                 endpoints = {}
+                retained = {
+                    "oldest_snapshot_at_ms": None,
+                    "newest_snapshot_at_ms": None,
+                    "oldest_event_at_ms": None,
+                    "newest_event_at_ms": None,
+                }
                 step = bucket_ms or max(5_000, (until - since) // 180)
                 for replica in inventory:
                     latest = conn.execute(
@@ -552,19 +665,41 @@ class SQLiteStore:
                 if replicas:
                     placeholders = ",".join("?" for _ in replicas)
                     ids = [r["id"] for r in replicas]
-                    if all_history:
-                        first, last = conn.execute(
-                            f"""SELECT MIN(at_ms),MAX(at_ms) FROM (
-                                SELECT n.observed_at_ms AS at_ms FROM snapshots n
-                                JOIN runs u ON u.id=n.run_id
-                                WHERE u.replica_id IN ({placeholders})
-                                UNION ALL
-                                SELECT e.occurred_at_ms AS at_ms FROM events e
-                                JOIN runs u ON u.id=e.run_id
-                                WHERE u.replica_id IN ({placeholders})
-                            )""",
-                            (*ids, *ids),
+                    # Snapshot times never decrease within a run. Read its
+                    # indexed sequence endpoints rather than rescan all samples.
+                    # Extents do not establish continuous historical coverage.
+                    oldest, newest = conn.execute(
+                        f"""SELECT
+                        MIN((SELECT n.observed_at_ms FROM snapshots n WHERE n.run_id=u.id
+                            ORDER BY n.sequence ASC LIMIT 1)),
+                        MAX((SELECT n.observed_at_ms FROM snapshots n WHERE n.run_id=u.id
+                            ORDER BY n.sequence DESC LIMIT 1))
+                        FROM runs u WHERE u.replica_id IN ({placeholders})""",
+                        ids,
+                    ).fetchone()
+                    retained.update(oldest_snapshot_at_ms=oldest, newest_snapshot_at_ms=newest)
+                    for edge, direction in (("oldest", "ASC"), ("newest", "DESC")):
+                        value = conn.execute(
+                            f"""SELECT e.occurred_at_ms FROM events e
+                            JOIN runs u ON u.id=e.run_id
+                            WHERE u.replica_id IN ({placeholders})
+                            ORDER BY e.occurred_at_ms {direction} LIMIT 1""",
+                            ids,
                         ).fetchone()
+                        retained[f"{edge}_event_at_ms"] = value[0] if value else None
+                    if all_history:
+                        first_values = [
+                            retained[name]
+                            for name in ("oldest_snapshot_at_ms", "oldest_event_at_ms")
+                            if retained[name] is not None
+                        ]
+                        last_values = [
+                            retained[name]
+                            for name in ("newest_snapshot_at_ms", "newest_event_at_ms")
+                            if retained[name] is not None
+                        ]
+                        first = min(first_values, default=None)
+                        last = max(last_values, default=None)
                         since = first if first is not None else now
                         until = max(now + 1, last + 1) if last is not None else now + 1
                     step = bucket_ms or max(5_000, (until - since) // 180)
@@ -688,6 +823,7 @@ class SQLiteStore:
                     "history": sorted(history, key=lambda row: (row["at_ms"], row["site"])),
                     "events": events,
                     "storage": self._storage_status(conn),
+                    "retained": retained,
                     "queue_depth": self._queue.qsize(),
                     "site_options": [
                         dict(row)

@@ -9,8 +9,10 @@ standard-library unittest suite and supported Python versions.
    history; do not merge `main` into them.
 2. Add any label to request CI. Use `run-ci` by convention. If already present,
    remove it and add it again.
-3. Wait for both Python 3.11 and 3.14 jobs. They run tests, lint and formatting on
-   Linux. The required status is `unittest (Python 3.11)` from GitHub Actions.
+3. Wait for both Python 3.11 and 3.14 jobs and **Dashboard browser checks**. They
+   run tests, lint, formatting and fictional desktop/phone workflows on Linux.
+   The server-side required status remains `unittest (Python 3.11)` from GitHub
+   Actions; the browser job must also pass the dashboard review checklist.
 4. Merge using squash or rebase once the required check passes on the current,
    up-to-date branch. No reviewer approval is required by the ruleset.
 
@@ -45,3 +47,9 @@ and [required checks](https://docs.github.com/en/pull-requests/how-tos/merge-and
 Calendar boundary and daylight-saving tests run with Node's built-in test runner
 in the Python checks workflow. The hosted runner already includes Node; no npm
 packages or application runtime dependencies are added.
+
+The separate browser job installs locked development-only Playwright packages
+from `tests/browser/`, runs Chromium and WebKit interaction checks, and deletes
+its disposable fictional runtime afterward. Browser engines, Node and npm are
+not added to the installed monitoring server or producer adapters. See
+[local browser checks](../tests/browser/README.md).
